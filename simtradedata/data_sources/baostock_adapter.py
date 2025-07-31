@@ -109,14 +109,58 @@ class BaoStockAdapter(BaseDataSource):
                 adjustflag="3",  # 不复权
             )
 
+            # 检查查询是否成功
+            if rs.error_code != "0":
+                logger.warning(f"BaoStock查询失败 {bs_symbol}: {rs.error_msg}")
+
+                # 如果是会话相关错误，尝试重新连接
+                if (
+                    "login" in rs.error_msg.lower()
+                    or "not login" in rs.error_msg.lower()
+                ):
+                    logger.info(f"检测到BaoStock会话过期，尝试重新连接...")
+                    self.disconnect()
+                    self.connect()
+
+                    # 重新查询
+                    rs = self._baostock.query_history_k_data_plus(
+                        bs_symbol,
+                        "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST",
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag="3",  # 不复权
+                    )
+
+                    if rs.error_code != "0":
+                        logger.error(
+                            f"重新连接后仍查询失败 {bs_symbol}: {rs.error_msg}"
+                        )
+                        return {}
+                else:
+                    return {}
+
             # 直接使用get_data()获取DataFrame
             df = rs.get_data()
 
+            # 验证返回的数据类型
+            if not hasattr(df, "empty") or not hasattr(df, "replace"):
+                logger.error(f"BaoStock返回了异常数据类型: {type(df)}, 内容: {df}")
+                return {}
+
             if df.empty:
+                logger.debug(
+                    f"BaoStock返回空DataFrame: {bs_symbol}, 日期: {start_date}-{end_date}"
+                )
                 return {}
 
             # 清理DataFrame中的空字符串
             df = df.replace("", None)
+
+            # 验证DataFrame结构
+            if len(df.columns) == 0:
+                logger.error(f"BaoStock返回空列DataFrame: {bs_symbol}")
+                return {}
 
             # 直接返回DataFrame
             return df

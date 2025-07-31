@@ -260,11 +260,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_daily_data", priorities, symbol, start_date, end_date
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     @unified_error_handler(return_dict=True)
     def get_minute_data(
@@ -305,11 +301,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_minute_data", priorities, symbol, trade_date, frequency
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     @unified_error_handler(return_dict=True)
     def get_stock_info(
@@ -370,11 +362,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_fundamentals", priorities, symbol, report_date, report_type
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     @unified_error_handler(return_dict=True)
     def get_trade_calendar(
@@ -397,11 +385,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_trade_calendar", priorities, start_date, end_date
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     @unified_error_handler(return_dict=True)
     def get_adjustment_data(
@@ -431,11 +415,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_adjustment_data", priorities, symbol, start_date, end_date
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     @unified_error_handler(return_dict=True)
     def get_valuation_data(
@@ -461,11 +441,7 @@ class DataSourceManager(BaseManager):
         fallback_result = self.get_data_with_fallback(
             "get_valuation_data", priorities, symbol, trade_date
         )
-        return (
-            fallback_result["data"]
-            if isinstance(fallback_result, dict)
-            else fallback_result
-        )
+        return fallback_result
 
     def _parse_market_from_symbol(self, symbol: str) -> str:
         """从股票代码解析市场"""

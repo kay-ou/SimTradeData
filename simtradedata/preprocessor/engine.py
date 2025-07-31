@@ -101,14 +101,35 @@ class DataProcessingEngine(BaseManager):
 
         try:
             # 获取原始数据
+            self.logger.debug(f"开始获取原始数据: {symbol}")
             raw_data = self.data_source_manager.get_daily_data(
                 symbol, start_date, end_date
             )
+            self.logger.debug(f"原始数据获取完成，类型: {type(raw_data)}")
 
             # 检查数据格式
             if raw_data is None:
                 self._log_warning("process_symbol_data", f"未获取到数据: {symbol}")
                 return result
+
+            # 详细记录原始数据情况，特别是空字典的情况
+            try:
+                if isinstance(raw_data, dict):
+                    if len(raw_data) == 0:
+                        self._log_warning(
+                            "process_symbol_data",
+                            f"数据源返回空字典: {symbol}, 日期范围: {start_date} 到 {end_date}",
+                        )
+                        return result
+                elif hasattr(raw_data, "empty") and raw_data.empty:
+                    self._log_warning(
+                        "process_symbol_data",
+                        f"数据源返回空DataFrame: {symbol}, 日期范围: {start_date} 到 {end_date}",
+                    )
+                    return result
+            except Exception as e:
+                self.logger.error(f"检查数据格式时出错: {e}")
+                raise
 
             # 处理嵌套的装饰器返回格式
             if isinstance(raw_data, dict) and "data" in raw_data:
@@ -116,11 +137,23 @@ class DataProcessingEngine(BaseManager):
                 if isinstance(raw_data, dict) and "data" in raw_data:
                     raw_data = raw_data["data"]
 
+            self.logger.debug(f"处理后数据类型: {type(raw_data)}")
+            try:
+                if hasattr(raw_data, "shape"):
+                    self.logger.debug(f"DataFrame形状: {raw_data.shape}")
+                    self.logger.debug(f"DataFrame列数: {len(raw_data.columns)}")
+                    self.logger.debug(f"DataFrame列名: {list(raw_data.columns)}")
+            except Exception as e:
+                self.logger.error(f"检查DataFrame属性失败: {e}")
+                raise
+
             # 如果数据是DataFrame，进行批量处理和计算
             if hasattr(raw_data, "iterrows") and hasattr(raw_data, "sort_values"):
+                self.logger.debug("开始DataFrame数据处理")
                 processed_count = self._process_dataframe_data(raw_data, symbol, result)
                 result["total_records"] = processed_count
             elif isinstance(raw_data, list):
+                self.logger.debug("开始列表数据处理")
                 # 如果是列表格式，转换为逐行处理
                 for item in raw_data:
                     try:
@@ -135,9 +168,24 @@ class DataProcessingEngine(BaseManager):
                         result["failed_dates"].append(str(item.get("date", start_date)))
 
                 result["total_records"] = len(result["processed_dates"])
+            elif isinstance(raw_data, dict):
+                # 处理字典类型数据（包括空字典）
+                if len(raw_data) == 0:
+                    self._log_warning(
+                        "process_symbol_data",
+                        f"数据源返回空字典: {symbol}, 日期范围: {start_date} 到 {end_date}",
+                    )
+                else:
+                    # 非空字典，可能是其他格式的数据，尝试处理
+                    self._log_warning(
+                        "process_symbol_data",
+                        f"收到字典格式数据但未能处理: {symbol}, 键: {list(raw_data.keys())}",
+                    )
             else:
+                # 详细记录不支持的数据格式，包括数据内容用于调试
                 self._log_warning(
-                    "process_symbol_data", f"不支持的数据格式: {type(raw_data)}"
+                    "process_symbol_data",
+                    f"不支持的数据格式: {type(raw_data)}, 数据内容: {raw_data}, 符号: {symbol}",
                 )
 
         except Exception as e:
@@ -174,16 +222,36 @@ class DataProcessingEngine(BaseManager):
 
             # 批量存储到数据库
             records_stored = 0
-            for _, row in df.iterrows():
+            for row_idx, (_, row) in enumerate(df.iterrows()):
                 try:
+                    self.logger.debug(f"处理第 {row_idx+1} 行数据，索引: {row.name}")
+
                     # 转换为字典并验证
-                    row_dict = row.to_dict()
-                    validated_data = self._validate_and_prepare_data(row_dict)
+                    try:
+                        row_dict = row.to_dict()
+                        self.logger.debug(
+                            f"row.to_dict() 成功，字典大小: {len(row_dict)}"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"row.to_dict() 失败: {e}")
+                        raise
+
+                    try:
+                        validated_data = self._validate_and_prepare_data(row_dict)
+                        self.logger.debug(f"数据验证成功")
+                    except Exception as e:
+                        self.logger.error(f"数据验证失败: {e}")
+                        raise
 
                     # 存储数据
-                    self._store_enhanced_market_data(
-                        validated_data, symbol, row_dict.get("date")
-                    )
+                    try:
+                        self._store_enhanced_market_data(
+                            validated_data, symbol, row_dict.get("date")
+                        )
+                        self.logger.debug(f"数据存储成功")
+                    except Exception as e:
+                        self.logger.error(f"数据存储失败: {e}")
+                        raise
 
                     result["processed_dates"].append(str(row_dict.get("date")))
                     records_stored += 1
@@ -194,6 +262,7 @@ class DataProcessingEngine(BaseManager):
                         e,
                         symbol=symbol,
                         date=row.get("date"),
+                        row_index=row_idx,
                     )
                     result["failed_dates"].append(str(row.get("date", "unknown")))
 
@@ -208,6 +277,11 @@ class DataProcessingEngine(BaseManager):
         import numpy as np
         import pandas as pd
 
+        # 调试信息
+        self.logger.debug(f"计算衍生字段开始: {symbol}, DataFrame形状: {df.shape}")
+        self.logger.debug(f"DataFrame列: {list(df.columns)}")
+        self.logger.debug(f"DataFrame数据类型: {df.dtypes}")
+
         # 确保数据按日期排序
         df = df.sort_values("date")
 
@@ -215,74 +289,106 @@ class DataProcessingEngine(BaseManager):
         numeric_columns = ["open", "high", "low", "close", "volume", "amount"]
         for col in numeric_columns:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                try:
+                    old_type = df[col].dtype
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                    self.logger.debug(
+                        f"列 {col} 类型转换: {old_type} -> {df[col].dtype}"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"列 {col} 类型转换失败: {e}")
 
         # 计算前一日收盘价（向前填充）
-        df["prev_close"] = df["close"].shift(1)
+        try:
+            df["prev_close"] = df["close"].shift(1)
+        except Exception as e:
+            self.logger.error(f"计算prev_close失败: {e}")
+            raise
 
         # 计算涨跌额
-        df["change_amount"] = df["close"] - df["prev_close"]
+        try:
+            df["change_amount"] = df["close"] - df["prev_close"]
+        except Exception as e:
+            self.logger.error(f"计算change_amount失败: {e}")
+            raise
 
         # 计算涨跌幅（百分比）
-        df["change_percent"] = np.where(
-            df["prev_close"] > 0,
-            (df["change_amount"] / df["prev_close"] * 100).round(4),
-            0.0,
-        )
+        try:
+            df["change_percent"] = np.where(
+                df["prev_close"] > 0,
+                (df["change_amount"] / df["prev_close"] * 100).round(4),
+                0.0,
+            )
+        except Exception as e:
+            self.logger.error(f"计算change_percent失败: {e}")
+            raise
 
         # 计算振幅
-        df["amplitude"] = np.where(
-            df["prev_close"] > 0,
-            ((df["high"] - df["low"]) / df["prev_close"] * 100).round(4),
-            0.0,
-        )
+        try:
+            df["amplitude"] = np.where(
+                df["prev_close"] > 0,
+                ((df["high"] - df["low"]) / df["prev_close"] * 100).round(4),
+                0.0,
+            )
+        except Exception as e:
+            self.logger.error(f"计算amplitude失败: {e}")
+            raise
 
         # 计算换手率（如果有流通股本数据）
         # 这里暂时设为None，后续可以从股票信息表获取流通股本
         df["turnover_rate"] = None
 
         # 计算涨跌停价格（简化版本，假设10%涨跌停）
-        df["high_limit"] = np.where(
-            df["prev_close"] > 0, (df["prev_close"] * 1.1).round(2), None
-        )
-        df["low_limit"] = np.where(
-            df["prev_close"] > 0, (df["prev_close"] * 0.9).round(2), None
-        )
+        try:
+            df["high_limit"] = np.where(
+                df["prev_close"] > 0, (df["prev_close"] * 1.1).round(2), None
+            )
+            df["low_limit"] = np.where(
+                df["prev_close"] > 0, (df["prev_close"] * 0.9).round(2), None
+            )
+        except Exception as e:
+            self.logger.error(f"计算涨跌停价格失败: {e}")
+            raise
 
         # 判断是否涨停/跌停（处理None值）
-        df["is_limit_up"] = False
-        df["is_limit_down"] = False
+        try:
+            df["is_limit_up"] = False
+            df["is_limit_down"] = False
 
-        # 只对有涨跌停价格的行进行判断
-        valid_high_limit = df["high_limit"].notna()
-        valid_low_limit = df["low_limit"].notna()
+            # 只对有涨跌停价格的行进行判断
+            valid_high_limit = df["high_limit"].notna()
+            valid_low_limit = df["low_limit"].notna()
 
-        if valid_high_limit.any():
-            df.loc[valid_high_limit, "is_limit_up"] = (
-                df.loc[valid_high_limit, "close"]
-                >= df.loc[valid_high_limit, "high_limit"]
-            )
-        if valid_low_limit.any():
-            df.loc[valid_low_limit, "is_limit_down"] = (
-                df.loc[valid_low_limit, "close"] <= df.loc[valid_low_limit, "low_limit"]
-            )
+            if valid_high_limit.any():
+                df.loc[valid_high_limit, "is_limit_up"] = (
+                    df.loc[valid_high_limit, "close"]
+                    >= df.loc[valid_high_limit, "high_limit"]
+                )
+            if valid_low_limit.any():
+                df.loc[valid_low_limit, "is_limit_down"] = (
+                    df.loc[valid_low_limit, "close"]
+                    <= df.loc[valid_low_limit, "low_limit"]
+                )
+        except Exception as e:
+            self.logger.error(f"计算涨跌停判断失败: {e}")
+            raise
 
         # 第一行数据没有前一日数据，设为默认值
-        if len(df) > 0:
-            first_idx = df.index[0]
-            df.loc[
-                first_idx,
-                [
-                    "prev_close",
-                    "change_amount",
-                    "change_percent",
-                    "amplitude",
-                    "high_limit",
-                    "low_limit",
-                    "is_limit_up",
-                    "is_limit_down",
-                ],
-            ] = [None, 0.0, 0.0, 0.0, None, None, False, False]
+        try:
+            if len(df) > 0:
+                first_idx = df.index[0]
+                # 逐列设置，避免长度不匹配的问题
+                df.loc[first_idx, "prev_close"] = None
+                df.loc[first_idx, "change_amount"] = 0.0
+                df.loc[first_idx, "change_percent"] = 0.0
+                df.loc[first_idx, "amplitude"] = 0.0
+                df.loc[first_idx, "high_limit"] = None
+                df.loc[first_idx, "low_limit"] = None
+                df.loc[first_idx, "is_limit_up"] = False
+                df.loc[first_idx, "is_limit_down"] = False
+        except Exception as e:
+            self.logger.error(f"设置第一行默认值失败: {e}")
+            raise
 
         self.logger.debug(f"为股票 {symbol} 计算了 {len(df)} 条记录的衍生字段")
 
@@ -309,6 +415,11 @@ class DataProcessingEngine(BaseManager):
             """安全的浮点数转换"""
             if value is None or value == "" or str(value).strip() == "":
                 return default
+            # 处理pandas NaN值
+            import pandas as pd
+
+            if pd.isna(value):
+                return default
             try:
                 return float(value)
             except (ValueError, TypeError):
@@ -324,14 +435,14 @@ class DataProcessingEngine(BaseManager):
                 return value != 0
             return default
 
-        # 基础字段验证
+        # 基础字段验证 - 确保关键字段不为None
         validated_data = {
-            "open": safe_float(data.get("open")),
-            "high": safe_float(data.get("high")),
-            "low": safe_float(data.get("low")),
-            "close": safe_float(data.get("close")),
-            "volume": safe_float(data.get("volume")),
-            "amount": safe_float(data.get("amount")),
+            "open": safe_float(data.get("open"), 0.0),
+            "high": safe_float(data.get("high"), 0.0),
+            "low": safe_float(data.get("low"), 0.0),
+            "close": safe_float(data.get("close"), 0.0),
+            "volume": safe_float(data.get("volume"), 0.0),  # 确保volume不为NULL
+            "amount": safe_float(data.get("amount"), 0.0),
         }
 
         # 衍生字段验证
@@ -390,21 +501,21 @@ class DataProcessingEngine(BaseManager):
             symbol,
             str(trade_date),
             "1d",
-            data.get("open", 0),
-            data.get("high", 0),
-            data.get("low", 0),
-            data.get("close", 0),
-            data.get("volume", 0),
-            data.get("amount", 0),
+            data.get("open") or 0,
+            data.get("high") or 0,
+            data.get("low") or 0,
+            data.get("close") or 0,
+            data.get("volume") or 0,  # 确保None时也使用0
+            data.get("amount") or 0,
             data.get("prev_close"),
-            data.get("change_amount", 0),
-            data.get("change_percent", 0),
-            data.get("amplitude", 0),
+            data.get("change_amount") or 0,
+            data.get("change_percent") or 0,
+            data.get("amplitude") or 0,
             data.get("turnover_rate"),
             data.get("high_limit"),
             data.get("low_limit"),
-            data.get("is_limit_up", False),
-            data.get("is_limit_down", False),
+            data.get("is_limit_up") or False,
+            data.get("is_limit_down") or False,
             "processed_enhanced",
             100,  # 默认质量分数
         )

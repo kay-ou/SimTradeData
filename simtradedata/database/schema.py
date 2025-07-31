@@ -44,18 +44,12 @@ DATABASE_SCHEMA = {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
-    # 2. 交易日历表
+    # 2. 交易日历表 (多市场版本)
     "trading_calendar": """
         CREATE TABLE trading_calendar (
-            date DATE NOT NULL,
-            market TEXT NOT NULL,                 -- CN/HK/US
-            is_trading BOOLEAN NOT NULL,          -- 是否交易日
-            
-            -- 交易时间信息
-            morning_open TIME,                    -- 上午开盘
-            morning_close TIME,                   -- 上午收盘
-            afternoon_open TIME,                  -- 下午开盘
-            afternoon_close TIME,                 -- 下午收盘
+            date TEXT NOT NULL,                   -- 日期 YYYY-MM-DD
+            market TEXT NOT NULL,                 -- 市场代码 CN/HK/US
+            is_trading INTEGER NOT NULL DEFAULT 1,-- 是否交易日 (1=是, 0=否)
             
             PRIMARY KEY (date, market)
         )

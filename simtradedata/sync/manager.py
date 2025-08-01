@@ -409,79 +409,44 @@ class SyncManager(BaseManager):
             self._log_error("run_full_sync", e, target_date=target_date)
             raise
 
-    @unified_error_handler(return_dict=True)
     def get_sync_status(self) -> Dict[str, Any]:
         """获取同步状态"""
-        try:
-            # 获取最近的同步状态
-            sql = """
-            SELECT * FROM sync_status
-            ORDER BY last_sync_date DESC
-            LIMIT 10
-            """
+        # 获取最近的同步状态
+        sql = """
+        SELECT * FROM sync_status
+        ORDER BY last_sync_date DESC
+        LIMIT 10
+        """
+        recent_syncs = self.db_manager.fetchall(sql)
 
-            recent_syncs = self.db_manager.fetchall(sql)
+        # 获取数据统计
+        stats_sql = """
+        SELECT 
+            COUNT(*) as total_records,
+            COUNT(DISTINCT symbol) as total_symbols,
+            COUNT(DISTINCT date) as total_dates,
+            MIN(date) as earliest_date,
+            MAX(date) as latest_date,
+            AVG(quality_score) as avg_quality
+        FROM market_data
+        """
+        stats_result = self.db_manager.fetchone(stats_sql)
 
-            # 获取数据统计
-            stats_sql = """
-            SELECT 
-                COUNT(*) as total_records,
-                COUNT(DISTINCT symbol) as total_symbols,
-                COUNT(DISTINCT date) as total_dates,
-                MIN(date) as earliest_date,
-                MAX(date) as latest_date,
-                AVG(quality_score) as avg_quality
-            FROM market_data
-            """
-
-            stats_result = self.db_manager.fetchone(stats_sql)
-
-            return {
-                "recent_syncs": [dict(row) for row in recent_syncs],
-                "data_stats": dict(stats_result) if stats_result else {},
-                "components": {
-                    "incremental_sync": (
-                        self.incremental_sync.get_sync_stats()
-                        if hasattr(self.incremental_sync, "get_sync_stats")
-                        else {}
-                    ),
-                    "gap_detector": {
-                        "max_gap_days": getattr(self.gap_detector, "max_gap_days", 30),
-                        "min_data_quality": getattr(
-                            self.gap_detector, "min_data_quality", 0.8
-                        ),
-                    },
-                    "validator": {
-                        "min_data_quality": getattr(
-                            self.validator, "min_data_quality", 0.8
-                        ),
-                        "max_price_change_pct": getattr(
-                            self.validator, "max_price_change_pct", 20.0
-                        ),
-                    },
-                },
-                "config": {
-                    "enable_auto_gap_fix": self.enable_auto_gap_fix,
-                    "enable_validation": self.enable_validation,
-                    "max_gap_fix_days": self.max_gap_fix_days,
-                },
-            }
-
-        except Exception as e:
-            self._log_error("get_sync_status", e)
-            raise
+        return {
+            "recent_syncs": [dict(row) for row in recent_syncs],
+            "data_stats": dict(stats_result) if stats_result else {},
+            "config": {
+                "enable_auto_gap_fix": self.enable_auto_gap_fix,
+                "enable_validation": self.enable_validation,
+                "max_gap_fix_days": self.max_gap_fix_days,
+            },
+        }
 
     def _get_active_stocks_from_db(self) -> List[str]:
         """从数据库获取活跃股票列表"""
-        try:
-            sql = "SELECT symbol FROM stocks WHERE status = 'active' ORDER BY symbol"
-            result = self.db_manager.fetchall(sql)
-            return [row["symbol"] for row in result] if result else []
-        except Exception as e:
-            self._log_warning(
-                "_get_active_stocks_from_db", f"从数据库获取股票列表失败: {e}"
-            )
-            return []
+        sql = "SELECT symbol FROM stocks WHERE status = 'active' ORDER BY symbol"
+        result = self.db_manager.fetchall(sql)
+        return [row["symbol"] for row in result] if result else []
 
     def _get_extended_data_symbols_to_process(
         self, symbols: List[str], target_date: date
@@ -624,12 +589,9 @@ class SyncManager(BaseManager):
             return symbols_needing_processing
 
         except Exception as e:
-            self.logger.warning(f"检查扩展数据完整性失败: {e}")
-            import traceback
-
-            self.logger.debug(f"详细错误: {traceback.format_exc()}")
-            # 出错时返回所有股票，确保不遗漏
-            return symbols
+            self.logger.error(f"检查扩展数据完整性失败: {e}")
+            # 让错误快速暴露，不要默默处理
+            raise
 
     def _update_trading_calendar(self, target_date: date) -> Dict[str, Any]:
         """增量更新交易日历"""
@@ -721,14 +683,6 @@ class SyncManager(BaseManager):
         """增量更新股票列表"""
         self.logger.info("🔄 开始股票列表增量更新...")
 
-        # 检查现有股票
-        existing_stats = self.db_manager.fetchone(
-            "SELECT COUNT(*) as total_count, COUNT(CASE WHEN status = 'active' THEN 1 END) as active_count FROM stocks"
-        )
-
-        total_existing = existing_stats["total_count"] if existing_stats else 0
-        active_existing = existing_stats["active_count"] if existing_stats else 0
-
         # 获取股票信息
         stock_info = self.data_source_manager.get_stock_info()
 
@@ -738,33 +692,25 @@ class SyncManager(BaseManager):
             if isinstance(stock_info, dict) and "data" in stock_info:
                 stock_info = stock_info["data"]
 
-        if stock_info is None or (hasattr(stock_info, "empty") and stock_info.empty):
+        if stock_info is None:
             return {
                 "status": "completed",
-                "total_stocks": total_existing,
-                "active_stocks": active_existing,
+                "total_stocks": 0,
                 "new_stocks": 0,
                 "updated_stocks": 0,
             }
 
-        # 简化处理：只统计数量
-        new_stocks = 0
-        total_processed = 0
-
-        if hasattr(stock_info, "iterrows"):  # DataFrame
+        # 统计数量
+        if hasattr(stock_info, "__len__"):
             total_processed = len(stock_info)
-            new_stocks = max(0, total_processed - total_existing)  # 简化估算
-        elif isinstance(stock_info, list):
-            total_processed = len(stock_info)
-            new_stocks = max(0, total_processed - total_existing)
+        else:
+            total_processed = 0
 
         return {
             "status": "completed",
-            "total_stocks": total_existing + new_stocks,
-            "active_stocks": active_existing + new_stocks,
-            "new_stocks": new_stocks,
+            "total_stocks": total_processed,
+            "new_stocks": total_processed,
             "updated_stocks": 0,
-            "processed_stocks": total_processed,
         }
 
     def _sync_extended_data(
@@ -891,625 +837,150 @@ class SyncManager(BaseManager):
             "attempted_fixes": 0,
             "successful_fixes": 0,
             "failed_fixes": 0,
-            "fix_details": [],
+            "skipped_fixes": 0,  # 新增：跳过的修复
         }
 
-        # 获取缺口详情
-        gaps_by_symbol = gap_result.get("gaps_by_symbol", {})
+        # 处理缺口数据结构 - 适配新的数据格式
+        all_gaps = []
+        for freq, freq_data in gap_result.get("gaps_by_frequency", {}).items():
+            all_gaps.extend(freq_data.get("gaps", []))
 
-        if not gaps_by_symbol:
+        if not all_gaps:
             self.logger.info("没有发现缺口，无需修复")
             return fix_result
 
-        # 限制修复数量，避免过长时间
-        max_fixes = 20
+        # 限制修复数量，优先修复重要股票的缺口
+        max_fixes = 10
         fixes_attempted = 0
 
-        for symbol, symbol_gaps in gaps_by_symbol.items():
+        for gap in all_gaps:
             if fixes_attempted >= max_fixes:
-                self.logger.info(f"已达到最大修复数量限制: {max_fixes}")
                 break
 
-            for gap in symbol_gaps.get("gaps", []):
-                if fixes_attempted >= max_fixes:
-                    break
+            symbol = gap.get("symbol")
+            gap_start = gap.get("start_date")
+            gap_end = gap.get("end_date")
+            frequency = gap.get("frequency", "1d")
 
+            if not symbol or not gap_start or not gap_end or frequency != "1d":
+                continue
+
+            # 检查股票是否适合修复（避免修复新股或停牌股的缺口）
+            stock_info = self.db_manager.fetchone(
+                "SELECT list_date, status FROM stocks WHERE symbol = ?", (symbol,)
+            )
+
+            if not stock_info:
+                self.logger.debug(f"跳过修复: {symbol} - 股票信息不存在")
+                continue
+
+            # 检查缺口是否在股票上市日期之后
+            if stock_info["list_date"]:
+                from datetime import datetime
+
+                list_date = datetime.strptime(
+                    stock_info["list_date"], "%Y-%m-%d"
+                ).date()
+                gap_start_date = datetime.strptime(gap_start, "%Y-%m-%d").date()
+
+                if gap_start_date < list_date:
+                    fix_result["skipped_fixes"] += 1
+                    self.logger.debug(f"跳过修复: {symbol} 缺口日期早于上市日期")
+                    continue
+
+            fix_result["attempted_fixes"] += 1
+            fixes_attempted += 1
+
+            self.logger.info(f"修复缺口: {symbol} {gap_start} 到 {gap_end}")
+
+            # 获取数据填补缺口
+            daily_data = self.data_source_manager.get_daily_data(
+                symbol, gap_start, gap_end
+            )
+
+            if isinstance(daily_data, dict) and "data" in daily_data:
+                daily_data = daily_data["data"]
+
+            # 实际处理数据插入
+            if (
+                daily_data is not None
+                and hasattr(daily_data, "__len__")
+                and len(daily_data) > 0
+            ):
                 try:
-                    gap_start = gap.get("gap_start")
-                    gap_end = gap.get("gap_end")
-                    frequency = gap.get("frequency", "1d")
+                    # 使用处理引擎插入缺口数据
+                    processed_result = self.processing_engine.process_symbol_data(
+                        symbol, str(gap_start), str(gap_end), frequency
+                    )
+                    records_inserted = processed_result.get("records", 0)
 
-                    if not gap_start or not gap_end:
-                        continue
-
-                    fix_result["attempted_fixes"] += 1
-                    fixes_attempted += 1
-
-                    self.logger.info(f"修复缺口: {symbol} {gap_start} 到 {gap_end}")
-
-                    # 尝试从数据源获取缺口期间的数据
-                    if frequency == "1d":
-                        # 获取日线数据填补缺口
-                        daily_data = self.data_source_manager.get_daily_data(
-                            symbol, gap_start, gap_end
+                    if records_inserted > 0:
+                        fix_result["successful_fixes"] += 1
+                        self.logger.info(
+                            f"缺口修复成功: {symbol} 插入{records_inserted}条记录"
                         )
-
-                        if isinstance(daily_data, dict) and "data" in daily_data:
-                            daily_data = daily_data["data"]
-
-                        # 检查获取到的数据
-                        if daily_data is not None and hasattr(daily_data, "__len__"):
-                            # 如果是DataFrame或列表，处理数据
-                            records_inserted = 0
-
-                            if hasattr(daily_data, "iterrows"):
-                                # pandas DataFrame
-                                for _, row in daily_data.iterrows():
-                                    try:
-                                        # 使用数据处理引擎插入数据
-                                        processed_result = (
-                                            self.processing_engine.process_symbol_data(
-                                                symbol,
-                                                str(gap_start),
-                                                str(gap_end),
-                                                frequency,
-                                            )
-                                        )
-                                        records_inserted += processed_result.get(
-                                            "records", 0
-                                        )
-                                        break  # 处理引擎会处理整个日期范围
-                                    except Exception as e:
-                                        self.logger.warning(
-                                            f"插入缺口数据失败 {symbol}: {e}"
-                                        )
-
-                            if records_inserted > 0:
-                                fix_result["successful_fixes"] += 1
-                                fix_result["fix_details"].append(
-                                    {
-                                        "symbol": symbol,
-                                        "gap_start": gap_start,
-                                        "gap_end": gap_end,
-                                        "records_inserted": records_inserted,
-                                        "status": "success",
-                                    }
-                                )
-                                self.logger.info(
-                                    f"缺口修复成功: {symbol} 插入 {records_inserted} 条记录"
-                                )
-                            else:
-                                fix_result["failed_fixes"] += 1
-                                fix_result["fix_details"].append(
-                                    {
-                                        "symbol": symbol,
-                                        "gap_start": gap_start,
-                                        "gap_end": gap_end,
-                                        "status": "failed",
-                                        "reason": "无数据可插入",
-                                    }
-                                )
-                        else:
-                            fix_result["failed_fixes"] += 1
-                            fix_result["fix_details"].append(
-                                {
-                                    "symbol": symbol,
-                                    "gap_start": gap_start,
-                                    "gap_end": gap_end,
-                                    "status": "failed",
-                                    "reason": "数据源无数据",
-                                }
-                            )
                     else:
-                        # 其他频率的缺口修复暂不实现
                         fix_result["failed_fixes"] += 1
-                        fix_result["fix_details"].append(
-                            {
-                                "symbol": symbol,
-                                "gap_start": gap_start,
-                                "gap_end": gap_end,
-                                "status": "failed",
-                                "reason": f"不支持频率 {frequency}",
-                            }
+                        self.logger.warning(
+                            f"缺口修复失败: {symbol} 处理引擎未插入数据"
                         )
-
                 except Exception as e:
                     fix_result["failed_fixes"] += 1
-                    fix_result["fix_details"].append(
-                        {
-                            "symbol": symbol,
-                            "gap_start": gap.get("gap_start"),
-                            "gap_end": gap.get("gap_end"),
-                            "status": "error",
-                            "reason": str(e),
-                        }
-                    )
-                    self.logger.error(f"修复缺口时发生错误 {symbol}: {e}")
+                    self.logger.warning(f"缺口修复出错: {symbol} - {e}")
+            else:
+                fix_result["failed_fixes"] += 1
+                self.logger.debug(f"缺口修复跳过: {symbol} 数据源无数据（可能正常）")
 
         self.logger.info(
-            f"缺口修复完成: 总缺口={fix_result['total_gaps']}, 尝试修复={fix_result['attempted_fixes']}, 成功={fix_result['successful_fixes']}, 失败={fix_result['failed_fixes']}"
+            f"缺口修复完成: 尝试={fix_result['attempted_fixes']}, 成功={fix_result['successful_fixes']}, 失败={fix_result['failed_fixes']}, 跳过={fix_result['skipped_fixes']}"
         )
+
+        # 如果大部分缺口都无法修复，说明这些缺口可能是正常的
+        if fix_result["attempted_fixes"] > 0:
+            success_rate = (
+                fix_result["successful_fixes"] / fix_result["attempted_fixes"]
+            )
+            if success_rate < 0.3:
+                self.logger.info(
+                    "💡 大部分缺口无法修复，这可能是正常现象（新股、停牌等）"
+                )
+
         return fix_result
 
     def generate_sync_report(self, full_result: Dict[str, Any]) -> str:
         """生成同步报告"""
-        try:
-            report_lines = []
+        report_lines = []
 
-            # 报告头部
-            report_lines.append("=" * 60)
-            report_lines.append("数据同步报告")
-            report_lines.append("=" * 60)
-            report_lines.append(f"同步时间: {full_result.get('start_time', '')}")
-            report_lines.append(f"目标日期: {full_result.get('target_date', '')}")
-            report_lines.append(
-                f"总耗时: {full_result.get('duration_seconds', 0):.2f} 秒"
-            )
-            report_lines.append("")
+        # 报告头部
+        report_lines.append("=" * 60)
+        report_lines.append("数据同步报告")
+        report_lines.append("=" * 60)
+        report_lines.append(f"同步时间: {full_result.get('start_time', '')}")
+        report_lines.append(f"目标日期: {full_result.get('target_date', '')}")
+        report_lines.append(f"总耗时: {full_result.get('duration_seconds', 0):.2f} 秒")
+        report_lines.append("")
 
-            # 阶段汇总
-            summary = full_result.get("summary", {})
-            report_lines.append("阶段汇总:")
-            report_lines.append(f"  总阶段数: {summary.get('total_phases', 0)}")
-            report_lines.append(f"  成功阶段: {summary.get('successful_phases', 0)}")
-            report_lines.append(f"  失败阶段: {summary.get('failed_phases', 0)}")
-            report_lines.append("")
+        # 阶段汇总
+        summary = full_result.get("summary", {})
+        report_lines.append("阶段汇总:")
+        report_lines.append(f"  总阶段数: {summary.get('total_phases', 0)}")
+        report_lines.append(f"  成功阶段: {summary.get('successful_phases', 0)}")
+        report_lines.append(f"  失败阶段: {summary.get('failed_phases', 0)}")
+        report_lines.append("")
 
-            # 各阶段详情
-            phases = full_result.get("phases", {})
+        # 增量同步详情
+        phases = full_result.get("phases", {})
+        if "incremental_sync" in phases:
+            phase = phases["incremental_sync"]
+            report_lines.append("增量同步:")
+            report_lines.append(f"  状态: {phase['status']}")
 
-            # 增量同步
-            if "incremental_sync" in phases:
-                phase = phases["incremental_sync"]
-                report_lines.append("增量同步:")
-                report_lines.append(f"  状态: {phase['status']}")
+            if phase["status"] == "completed" and "result" in phase:
+                result = phase["result"]
+                report_lines.append(f"  总股票数: {result.get('total_symbols', 0)}")
+                report_lines.append(f"  成功数量: {result.get('success_count', 0)}")
+                report_lines.append(f"  错误数量: {result.get('error_count', 0)}")
+            elif "error" in phase:
+                report_lines.append(f"  错误: {phase['error']}")
 
-                if phase["status"] == "completed" and "result" in phase:
-                    result = phase["result"]
-                    report_lines.append(f"  总股票数: {result.get('total_symbols', 0)}")
-                    report_lines.append(f"  成功数量: {result.get('success_count', 0)}")
-                    report_lines.append(f"  错误数量: {result.get('error_count', 0)}")
-                    report_lines.append(f"  跳过数量: {result.get('skipped_count', 0)}")
-                elif "error" in phase:
-                    report_lines.append(f"  错误: {phase['error']}")
-
-                report_lines.append("")
-
-            return "\n".join(report_lines)
-
-        except Exception as e:
-            self._log_error("generate_sync_report", e)
-            return f"报告生成失败: {e}"
-
-    def _safe_get_attribute(self, obj, key: str, default=None):
-        """安全获取对象属性，兼容dict和sqlite3.Row"""
-        if obj is None:
-            return default
-
-        try:
-            if hasattr(obj, "get"):
-                return obj.get(key, default)
-            elif hasattr(obj, "__getitem__"):
-                return obj[key]
-        except (KeyError, IndexError, TypeError):
-            return default
-
-        return default
-
-    def _calculate_technical_indicators(
-        self,
-        symbol: str,
-        target_date: date,
-        indicator_calculator,
-        existing_indicators: Dict[str, Any] = None,
-    ) -> Dict[str, Any]:
-        """
-        计算单个股票的技术指标
-
-        Args:
-            symbol: 股票代码
-            target_date: 目标日期
-            indicator_calculator: 技术指标计算器
-            existing_indicators: 已存在的指标数据
-
-        Returns:
-            Dict[str, Any]: 计算结果 {"success": bool, "indicators": dict, "message": str}
-        """
-        from datetime import datetime, timedelta
-
-        # 检查是否需要更新
-        daily_update_threshold = timedelta(days=1)
-        if existing_indicators:
-            try:
-                # 安全获取 last_update 字段，兼容 dict 和 sqlite3.Row
-                last_update_value = self._safe_get_attribute(
-                    existing_indicators, "last_update"
-                )
-
-                if last_update_value:
-                    last_update = datetime.fromisoformat(
-                        last_update_value.replace("Z", "+00:00")
-                        if last_update_value.endswith("Z")
-                        else last_update_value
-                    )
-                    if datetime.now() - last_update < daily_update_threshold:
-                        return {
-                            "success": False,
-                            "message": "recently_updated",
-                            "indicators": None,
-                        }
-            except Exception:
-                pass  # 如果解析时间失败，继续计算
-
-        # 获取历史数据
-        start_date = target_date - timedelta(days=100)
-        try:
-            historical_data = self.data_source_manager.get_daily_data(
-                symbol, start_date, target_date
-            )
-        except Exception as e:
-            return {
-                "success": False,
-                "message": f"获取历史数据失败: {e}",
-                "indicators": None,
-            }
-
-        # 处理历史数据格式
-        processed_data = self._process_historical_data(historical_data)
-        if not processed_data:
-            return {
-                "success": False,
-                "message": "历史数据为空或格式错误",
-                "indicators": None,
-            }
-
-        # 检查数据量是否足够
-        data_length = self._get_data_length(processed_data)
-        if data_length < 20:
-            return {
-                "success": False,
-                "message": f"历史数据不足({data_length}条)",
-                "indicators": None,
-            }
-
-        # 计算技术指标
-        try:
-            # 临时降低日志级别，避免干扰进度条
-            indicators_logger = logging.getLogger(
-                "simtradedata.preprocessor.indicators"
-            )
-            original_level = indicators_logger.level
-            indicators_logger.setLevel(logging.ERROR)
-
-            try:
-                indicators_data = indicator_calculator.calculate_indicators(
-                    processed_data, symbol
-                )
-            finally:
-                indicators_logger.setLevel(original_level)
-
-            if not indicators_data or not isinstance(indicators_data, dict):
-                return {
-                    "success": False,
-                    "message": "技术指标计算结果为空",
-                    "indicators": None,
-                }
-
-            # 提取最新指标值
-            latest_indicators = self._extract_latest_indicators(indicators_data)
-            if not latest_indicators:
-                return {
-                    "success": False,
-                    "message": "无法提取最新指标值",
-                    "indicators": None,
-                }
-
-            return {
-                "success": True,
-                "message": "计算成功",
-                "indicators": latest_indicators,
-            }
-
-        except Exception as e:
-            return {"success": False, "message": f"计算异常: {e}", "indicators": None}
-
-    def _process_historical_data(self, historical_data) -> Any:
-        """处理历史数据格式"""
-        if historical_data is None:
-            return None
-
-        if isinstance(historical_data, dict) and "data" in historical_data:
-            return historical_data["data"]
-
-        return historical_data
-
-    def _get_data_length(self, data) -> int:
-        """获取数据长度"""
-        if hasattr(data, "__len__"):
-            return len(data)
-        elif hasattr(data, "shape"):
-            return data.shape[0]
-        return 0
-
-    def _extract_latest_indicators(
-        self, indicators_data: Dict[str, Any]
-    ) -> Dict[str, float]:
-        """提取最新的指标值"""
-        latest_indicators = {}
-        for indicator_name, values in indicators_data.items():
-            if isinstance(values, (list, tuple)) and len(values) > 0:
-                latest_indicators[indicator_name] = values[-1]
-            elif isinstance(values, (int, float)):
-                latest_indicators[indicator_name] = values
-        return latest_indicators
-
-    def _initialize_extended_sync_status(
-        self, symbols: List[str], target_date: date, session_id: str
-    ):
-        """初始化扩展数据同步状态记录 - 只为不存在的记录创建状态"""
-        try:
-            sync_types = ["financials", "valuations", "indicators"]
-
-            for symbol in symbols:
-                for sync_type in sync_types:
-                    # 检查是否已存在记录
-                    existing = self.db_manager.fetchone(
-                        """
-                        SELECT 1 FROM extended_sync_status 
-                        WHERE symbol = ? AND sync_type = ? AND target_date = ?
-                        """,
-                        (symbol, sync_type, str(target_date)),
-                    )
-
-                    # 只有不存在时才插入新记录
-                    if not existing:
-                        self.db_manager.execute(
-                            """
-                            INSERT INTO extended_sync_status 
-                            (symbol, sync_type, target_date, status, phase, session_id, created_at, updated_at)
-                            VALUES (?, ?, ?, 'pending', 'extended_data', ?, datetime('now'), datetime('now'))
-                            """,
-                            (symbol, sync_type, str(target_date), session_id),
-                        )
-
-            self.logger.debug(
-                f"初始化扩展数据同步状态: {len(symbols)}只股票 x 3种类型 (仅新增)"
-            )
-
-        except Exception as e:
-            self.logger.warning(f"初始化扩展数据同步状态失败: {e}")
-
-    def _update_sync_status(
-        self,
-        symbol: str,
-        sync_type: str,
-        target_date: str,
-        status: str,
-        session_id: str,
-        records_count: int = 0,
-    ):
-        """更新单个股票的同步状态"""
-        try:
-            # 确保正确更新所有必要字段
-            self.db_manager.execute(
-                """
-                INSERT OR REPLACE INTO extended_sync_status 
-                (symbol, sync_type, target_date, status, last_updated, phase, session_id, records_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, datetime('now'), 'extended_data', ?, ?, 
-                        COALESCE((SELECT created_at FROM extended_sync_status WHERE symbol=? AND sync_type=? AND target_date=?), datetime('now')), 
-                        datetime('now'))
-                """,
-                (
-                    symbol,
-                    sync_type,
-                    target_date,
-                    status,
-                    session_id,
-                    records_count,
-                    symbol,
-                    sync_type,
-                    target_date,
-                ),
-            )
-            self.logger.debug(f"更新同步状态: {symbol}-{sync_type} -> {status}")
-        except Exception as e:
-            self.logger.warning(f"更新同步状态失败 {symbol}-{sync_type}: {e}")
-            import traceback
-
-            self.logger.debug(f"详细错误: {traceback.format_exc()}")
-
-    def _get_sync_summary(self, target_date: str, session_id: str) -> Dict[str, Any]:
-        """获取同步汇总信息"""
-        try:
-            summary_query = """
-                SELECT sync_type, status, COUNT(*) as count, SUM(records_count) as total_records
-                FROM extended_sync_status 
-                WHERE target_date = ? AND session_id = ?
-                GROUP BY sync_type, status
-                ORDER BY sync_type, status
-            """
-
-            summary_results = self.db_manager.fetchall(
-                summary_query, (target_date, session_id)
-            )
-
-            result = {
-                "financials_count": 0,
-                "valuations_count": 0,
-                "indicators_count": 0,
-                "processed_symbols": 0,
-                "failed_symbols": 0,
-                "skipped_symbols": 0,
-                "errors": [],
-                "session_id": session_id,
-            }
-
-            for row in summary_results:
-                sync_type = row["sync_type"]
-                status = row["status"]
-                count = row["count"]
-                records = row["total_records"] or 0
-
-                if sync_type == "financials" and status == "completed":
-                    result["financials_count"] = records
-                elif sync_type == "valuations" and status == "completed":
-                    result["valuations_count"] = records
-                elif sync_type == "indicators" and status == "completed":
-                    result["indicators_count"] = records
-
-                if status == "completed":
-                    result["processed_symbols"] += count
-                elif status == "failed":
-                    result["failed_symbols"] += count
-                elif status == "skipped":
-                    result["skipped_symbols"] += count
-
-            return result
-
-        except Exception as e:
-            self.logger.warning(f"获取同步汇总失败: {e}")
-            return {"error": str(e), "session_id": session_id}
-
-    def _get_sync_status_for_type(
-        self, symbol: str, sync_type: str, target_date: str
-    ) -> str:
-        """获取特定股票和数据类型的同步状态"""
-        try:
-            result = self.db_manager.fetchone(
-                """
-                SELECT status FROM extended_sync_status 
-                WHERE symbol = ? AND sync_type = ? AND target_date = ?
-                """,
-                (symbol, sync_type, target_date),
-            )
-            return result["status"] if result else "pending"
-        except Exception as e:
-            self.logger.debug(f"获取同步状态失败 {symbol}-{sync_type}: {e}")
-            return "pending"
-
-    def _filter_symbols_needing_extended_data(
-        self, symbols: List[str], target_date: date
-    ) -> List[str]:
-        """
-        智能过滤出真正需要处理扩展数据的股票
-        跳过已有完整数据的股票，大幅减少处理量
-        """
-        try:
-            symbols_needing_processing = []
-
-            # 批量查询已存在的数据
-            if not symbols:
-                return []
-
-            # 检查财务数据（年报数据，通常不需要频繁更新）
-            report_date = f"{target_date.year}-12-31"
-            financial_symbols = set()
-
-            if len(symbols) > 0:
-                placeholders = ",".join(["?" for _ in symbols])
-                financial_query = f"""
-                    SELECT DISTINCT symbol FROM financials 
-                    WHERE symbol IN ({placeholders}) 
-                    AND report_date = ? 
-                    AND created_at > datetime('now', '-30 days')
-                """
-                financial_results = self.db_manager.fetchall(
-                    financial_query, symbols + [report_date]
-                )
-                financial_symbols = set(row["symbol"] for row in financial_results)
-
-            # 检查估值数据（日数据，检查是否有当日数据）
-            valuation_symbols = set()
-            if len(symbols) > 0:
-                valuation_query = f"""
-                    SELECT DISTINCT symbol FROM valuations 
-                    WHERE symbol IN ({placeholders}) 
-                    AND date = ? 
-                    AND created_at > datetime('now', '-1 days')
-                """
-                valuation_results = self.db_manager.fetchall(
-                    valuation_query, symbols + [str(target_date)]
-                )
-                valuation_symbols = set(row["symbol"] for row in valuation_results)
-
-            # 检查技术指标（日数据，检查是否有当日数据）
-            indicator_symbols = set()
-            if len(symbols) > 0:
-                indicator_query = f"""
-                    SELECT DISTINCT symbol FROM technical_indicators 
-                    WHERE symbol IN ({placeholders}) 
-                    AND date = ? 
-                    AND calculated_at > datetime('now', '-1 days')
-                """
-                indicator_results = self.db_manager.fetchall(
-                    indicator_query, symbols + [str(target_date)]
-                )
-                indicator_symbols = set(row["symbol"] for row in indicator_results)
-
-            # 只处理缺少数据的股票
-            for symbol in symbols:
-                needs_financial = symbol not in financial_symbols
-                needs_valuation = symbol not in valuation_symbols
-                needs_indicators = symbol not in indicator_symbols
-
-                # 如果任何一种数据缺失，就需要处理这只股票
-                if needs_financial or needs_valuation or needs_indicators:
-                    symbols_needing_processing.append(symbol)
-
-            self.logger.info(
-                f"📊 数据完整性检查: "
-                f"财务数据完整 {len(financial_symbols)}只, "
-                f"估值数据完整 {len(valuation_symbols)}只, "
-                f"技术指标完整 {len(indicator_symbols)}只"
-            )
-
-            return symbols_needing_processing
-
-        except Exception as e:
-            self.logger.warning(f"过滤扩展数据股票失败: {e}")
-            # 出错时返回所有股票，确保不遗漏
-            return symbols
-
-    def _prioritize_symbols_for_processing(self, symbols: List[str]) -> List[str]:
-        """
-        为扩展数据处理优先排序股票
-        优先处理活跃的大市值股票
-        """
-        try:
-            if not symbols:
-                return []
-
-            # 查询股票的基本信息和最近交易活跃度
-            placeholders = ",".join(["?" for _ in symbols])
-            priority_query = f"""
-                SELECT s.symbol, s.name, s.market,
-                       COALESCE(s.total_shares, 0) as market_cap_proxy,
-                       COUNT(md.symbol) as recent_trading_days
-                FROM stocks s
-                LEFT JOIN market_data md ON s.symbol = md.symbol 
-                    AND md.date > date('now', '-30 days') 
-                    AND md.frequency = '1d'
-                WHERE s.symbol IN ({placeholders})
-                    AND s.status = 'active'
-                GROUP BY s.symbol, s.name, s.market, s.total_shares
-                ORDER BY 
-                    recent_trading_days DESC,  -- 最近交易活跃
-                    market_cap_proxy DESC,     -- 市值大的优先
-                    s.symbol ASC               -- 代码排序保证稳定性
-            """
-
-            priority_results = self.db_manager.fetchall(priority_query, symbols)
-
-            if priority_results:
-                prioritized_symbols = [row["symbol"] for row in priority_results]
-                self.logger.debug(
-                    f"股票优先级排序完成: 前5只 {prioritized_symbols[:5]}"
-                )
-                return prioritized_symbols
-            else:
-                # 如果查询失败，返回原始顺序
-                return symbols
-
-        except Exception as e:
-            self.logger.warning(f"股票优先级排序失败: {e}")
-            return symbols
+        return "\n".join(report_lines)

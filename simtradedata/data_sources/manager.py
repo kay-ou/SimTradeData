@@ -177,20 +177,26 @@ class DataSourceManager(BaseManager):
         if key in priority_config:
             return priority_config[key]
 
-        # 默认优先级策略
+        # 默认优先级策略 - akshare优先级降到最低
         if data_type == "ohlcv":
-            return ["baostock", "akshare", "qstock"]
+            return ["baostock", "qstock", "akshare"]
         elif data_type == "fundamentals":
-            return ["baostock", "akshare"]
+            return ["baostock", "akshare"]  # 财务数据只有这两个源
         elif data_type == "valuation":
-            return ["baostock", "akshare", "qstock"]  # BaoStock有估值数据且稳定
+            return ["baostock", "qstock", "akshare"]  # BaoStock有估值数据且稳定
         elif data_type == "adjustment":
             return ["baostock"]  # 只有BaoStock支持除权除息数据
         elif data_type == "calendar":
-            return ["baostock", "akshare"]
+            return ["baostock", "akshare"]  # 交易日历只有这两个源
+        elif data_type == "stock_info":
+            return ["baostock", "qstock", "akshare"]  # 股票信息，akshare优先级最低
         else:
-            # 返回所有可用的数据源作为默认优先级
-            return self.get_available_sources()
+            # 返回所有可用的数据源作为默认优先级，但akshare在最后
+            available = self.get_available_sources()
+            if "akshare" in available:
+                available.remove("akshare")
+                available.append("akshare")
+            return available
 
     @unified_error_handler(return_dict=True)
     def get_data_with_fallback(

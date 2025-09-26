@@ -210,40 +210,8 @@ def is_daily_frequency(frequency: str) -> bool:
     return frequency in config["frequencies"]["daily_frequencies"]
 
 
-# 市场特定的数据源优先级配置
-MARKET_DATA_SOURCE_PRIORITY = {
-    # A股市场 (SZ/SS)
-    ("SZ", "1d", "ohlcv"): ["baostock", "akshare", "qstock"],
-    ("SZ", "5m", "ohlcv"): ["akshare", "qstock"],
-    ("SZ", "1d", "fundamentals"): ["baostock", "akshare"],
-    ("SZ", "1d", "valuation"): ["akshare", "baostock"],
-    ("SS", "1d", "ohlcv"): ["baostock", "akshare", "qstock"],
-    ("SS", "5m", "ohlcv"): ["akshare", "qstock"],
-    ("SS", "1d", "fundamentals"): ["baostock", "akshare"],
-    ("SS", "1d", "valuation"): ["akshare", "baostock"],
-    # 港股市场 (HK)
-    ("HK", "1d", "ohlcv"): ["akshare"],
-    ("HK", "1d", "fundamentals"): ["akshare"],
-    # 美股市场 (US)
-    ("US", "1d", "ohlcv"): ["akshare"],
-    ("US", "1d", "fundamentals"): ["akshare"],
-}
-
-
-def get_data_source_priority(market: str, frequency: str, data_type: str) -> list:
-    """
-    获取数据源优先级
-
-    Args:
-        market: 市场代码
-        frequency: 频率
-        data_type: 数据类型
-
-    Returns:
-        list: 数据源优先级列表
-    """
-    key = (market, frequency, data_type)
-    return MARKET_DATA_SOURCE_PRIORITY.get(key, [])
+# 注意: 数据源优先级现在完全由数据库 data_sources 表管理
+# 所有优先级配置已移至数据库以确保单一数据源
 
 
 # 技术指标配置

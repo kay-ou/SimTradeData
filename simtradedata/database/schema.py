@@ -457,10 +457,22 @@ def _initialize_data_sources(conn):
     """初始化数据源配置"""
     sources = [
         (
-            "akshare",
+            "baostock",  # 优先级1: 最稳定，数据质量高
+            "baostock",
+            True,
+            1,  # 最高优先级
+            120,
+            False,
+            True,
+            True,
+            '["SZ","SS"]',
+            '["1d"]',  # BaoStock只支持日线
+        ),
+        (
+            "akshare",  # 优先级2: 功能全面但不稳定
             "akshare",
             True,
-            1,
+            2,
             60,
             True,
             True,
@@ -469,19 +481,7 @@ def _initialize_data_sources(conn):
             '["1d","5m","15m","30m","60m"]',
         ),
         (
-            "baostock",
-            "baostock",
-            True,
-            2,
-            120,
-            False,
-            True,
-            True,
-            '["SZ","SS"]',
-            '["1d","5m","15m","30m","60m"]',
-        ),
-        (
-            "qstock",
+            "qstock",  # 优先级3: 备用数据源
             "qstock",
             True,
             3,

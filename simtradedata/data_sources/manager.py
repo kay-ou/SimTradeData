@@ -24,13 +24,15 @@ logger = logging.getLogger(__name__)
 class DataSourceManager(BaseManager):
     """数据源管理器"""
 
-    def __init__(self, config: Optional[Config] = None, **kwargs):
+    def __init__(self, config: Optional[Config] = None, db_manager=None, **kwargs):
         """
         初始化数据源管理器
 
         Args:
             config: 配置对象
+            db_manager: 数据库管理器（用于读取数据源优先级）
         """
+        self.db_manager = db_manager
         super().__init__(config=config, **kwargs)
 
     def _get_config_prefix(self) -> str:
@@ -157,7 +159,7 @@ class DataSourceManager(BaseManager):
         self, market: str, frequency: str, data_type: str
     ) -> List[str]:
         """
-        获取数据源优先级
+        获取数据源优先级（从数据库读取）
 
         Args:
             market: 市场代码
@@ -170,33 +172,85 @@ class DataSourceManager(BaseManager):
         if not all([market, frequency, data_type]):
             raise ValidationError("市场、频率和数据类型参数不能为空")
 
-        # 从配置中获取优先级，或使用默认优先级
-        priority_config = self._get_config("source_priorities", {})
-        key = f"{market}_{frequency}_{data_type}"
+        try:
+            # 从数据库读取数据源配置，按优先级排序
+            sql = """
+                SELECT name, markets, frequencies, supports_history, supports_financials, supports_realtime
+                FROM data_sources
+                WHERE enabled = 1 AND status = 'active'
+                ORDER BY priority ASC
+            """
 
-        if key in priority_config:
-            return priority_config[key]
+            if not hasattr(self, "db_manager") or not self.db_manager:
+                # 如果没有数据库连接，使用基本可用数据源
+                self.logger.warning("无数据库连接，使用基本数据源列表")
+                return self.get_available_sources()
 
-        # 默认优先级策略 - akshare优先级降到最低
-        if data_type == "ohlcv":
-            return ["baostock", "qstock", "akshare"]
-        elif data_type == "fundamentals":
-            return ["baostock", "akshare"]  # 财务数据只有这两个源
-        elif data_type == "valuation":
-            return ["baostock", "qstock", "akshare"]  # BaoStock有估值数据且稳定
-        elif data_type == "adjustment":
-            return ["baostock"]  # 只有BaoStock支持除权除息数据
-        elif data_type == "calendar":
-            return ["baostock", "akshare"]  # 交易日历只有这两个源
-        elif data_type == "stock_info":
-            return ["baostock", "qstock", "akshare"]  # 股票信息，akshare优先级最低
-        else:
-            # 返回所有可用的数据源作为默认优先级，但akshare在最后
-            available = self.get_available_sources()
-            if "akshare" in available:
-                available.remove("akshare")
-                available.append("akshare")
-            return available
+            sources = self.db_manager.fetchall(sql)
+
+            if not sources:
+                self.logger.warning("数据库中没有找到可用数据源")
+                return self.get_available_sources()
+
+            # 根据市场、频率、数据类型过滤适用的数据源
+            suitable_sources = []
+
+            for source in sources:
+                source_name = source["name"]
+
+                # 检查是否在当前可用源中
+                if source_name not in self.sources:
+                    continue
+
+                # 检查市场支持
+                markets = self._parse_json_field(source["markets"], [])
+                if market not in markets:
+                    continue
+
+                # 检查频率支持
+                frequencies = self._parse_json_field(source["frequencies"], [])
+                if frequency not in frequencies:
+                    continue
+
+                # 检查数据类型支持
+                if data_type == "fundamentals" and not source["supports_financials"]:
+                    continue
+                elif data_type == "ohlcv" and not source["supports_history"]:
+                    continue
+                elif (
+                    data_type in ["stock_info", "calendar"]
+                    and not source["supports_history"]
+                ):
+                    continue
+                elif data_type == "adjustment" and source_name != "baostock":
+                    # 只有BaoStock支持除权除息数据
+                    continue
+
+                suitable_sources.append(source_name)
+
+            if not suitable_sources:
+                self.logger.warning(
+                    f"没有找到支持 {market}_{frequency}_{data_type} 的数据源"
+                )
+                return self.get_available_sources()
+
+            return suitable_sources
+
+        except Exception as e:
+            self.logger.error(f"从数据库读取数据源优先级失败: {e}")
+            # 出错时返回基本可用数据源
+            return self.get_available_sources()
+
+    def _parse_json_field(self, json_str: str, default):
+        """解析JSON字段"""
+        try:
+            import json
+
+            if json_str:
+                return json.loads(json_str)
+            return default
+        except (ValueError, TypeError):
+            return default
 
     @unified_error_handler(return_dict=True)
     def get_data_with_fallback(

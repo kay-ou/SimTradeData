@@ -80,13 +80,11 @@ class DataQualityValidator:
 
         pe_ratio = data.get("pe_ratio", 0)
         pb_ratio = data.get("pb_ratio", 0)
-        market_cap = data.get("market_cap", 0)
 
-        # PE/PB应该为正数且在合理范围内，市值应该大于0
-        return (
-            (pe_ratio and 0 < pe_ratio < SyncConstants.MAX_PE_RATIO)
-            or (pb_ratio and 0 < pb_ratio < SyncConstants.MAX_PB_RATIO)
-            or (market_cap and market_cap > 0)
+        # PE/PB应该为正数且在合理范围内
+        # 移除对market_cap的依赖，因为市值现在是计算值而非存储值
+        return (pe_ratio and 0 < pe_ratio < SyncConstants.MAX_PE_RATIO) or (
+            pb_ratio and 0 < pb_ratio < SyncConstants.MAX_PB_RATIO
         )
 
     @staticmethod
@@ -1890,8 +1888,8 @@ class SyncManager(BaseManager):
                                 if existing and existing["count"] == 0:
                                     self.db_manager.execute(
                                         """INSERT INTO valuations
-                                        (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, market_cap, circulating_cap, source)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, source)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                                         (
                                             symbol,
                                             record_date,
@@ -1899,8 +1897,6 @@ class SyncManager(BaseManager):
                                             record.get("pb_ratio"),
                                             record.get("ps_ratio"),
                                             record.get("pcf_ratio"),
-                                            record.get("market_cap"),
-                                            record.get("circulating_cap"),
                                             record.get("source", ""),
                                         ),
                                     )
@@ -1926,13 +1922,12 @@ class SyncManager(BaseManager):
                         valuation_data
                     ):
                         self.db_manager.execute(
-                            "INSERT OR REPLACE INTO valuations (symbol, date, pe_ratio, pb_ratio, market_cap, source, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+                            "INSERT OR REPLACE INTO valuations (symbol, date, pe_ratio, pb_ratio, source, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
                             (
                                 symbol,
                                 str(target_date),
                                 valuation_data.get("pe_ratio", None),
                                 valuation_data.get("pb_ratio", None),
-                                valuation_data.get("market_cap", None),
                                 "akshare",
                             ),
                         )

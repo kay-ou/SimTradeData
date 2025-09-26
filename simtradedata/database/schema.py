@@ -99,22 +99,21 @@ DATABASE_SCHEMA = {
         CREATE TABLE valuations (
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            
+
             -- 估值比率
             pe_ratio REAL,                        -- 市盈率
             pb_ratio REAL,                        -- 市净率
             ps_ratio REAL,                        -- 市销率
             pcf_ratio REAL,                       -- 市现率
             peg_ratio REAL,                       -- PEG比率
-            
-            -- 市值
-            market_cap REAL,                      -- 总市值
-            circulating_cap REAL,                -- 流通市值
-            
+
+            -- 注意：市值字段已移除，改为实时计算
+            -- market_cap 和 circulating_cap 通过股价*股本实时计算
+
             -- 数据源
             source TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            
+
             PRIMARY KEY (symbol, date)
         )
     """,

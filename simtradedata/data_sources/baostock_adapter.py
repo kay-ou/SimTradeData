@@ -684,8 +684,10 @@ class BaoStockAdapter(BaseDataSource):
             "pb_ratio": safe_float(data.get("pbMRQ", 0)),
             "ps_ratio": safe_float(data.get("psTTM", 0)),
             "pcf_ratio": safe_float(data.get("pcfNcfTTM", 0)),
-            "market_cap": market_cap,  # 计算得出的总市值
-            "circulating_cap": circulating_cap,  # 计算得出的流通市值
+            # 注意：total_value和market_cap在返回结果中提供，但不会存储到数据库
+            "total_value": market_cap,  # 为兼容性保留，提供给策略使用
+            "market_cap": market_cap,  # 计算得出的总市值（不存储）
+            "circulating_cap": circulating_cap,  # 计算得出的流通市值（不存储）
             "source": "baostock",
         }
 

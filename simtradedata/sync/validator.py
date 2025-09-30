@@ -456,8 +456,8 @@ class DataValidator:
         """获取活跃股票列表"""
         try:
             sql = """
-            SELECT symbol FROM ptrade_stock_info 
-            WHERE status = 'active' 
+            SELECT symbol FROM stocks
+            WHERE status = 'active'
             ORDER BY symbol
             """
             results = self.db_manager.fetchall(sql)

@@ -127,7 +127,7 @@ class DataAggregator:
             start_date = end_date - timedelta(days=date_range)
 
             # 构建查询条件
-            conditions = ["trade_date >= ?", "trade_date <= ?", "frequency = '1d'"]
+            conditions = ["date >= ?", "date <= ?", "frequency = '1d'"]
             params = [str(start_date), str(end_date)]
 
             if market:
@@ -138,15 +138,15 @@ class DataAggregator:
 
             # 基础统计
             basic_stats_sql = f"""
-            SELECT 
+            SELECT
                 COUNT(DISTINCT symbol) as total_stocks,
                 COUNT(*) as total_records,
                 AVG(close) as avg_price,
                 SUM(volume) as total_volume,
-                SUM(money) as total_turnover,
+                SUM(amount) as total_turnover,
                 AVG(change_percent) as avg_change_pct,
                 STDDEV(change_percent) as volatility
-            FROM market_data 
+            FROM market_data
             WHERE {where_clause}
             """
 
@@ -168,12 +168,12 @@ class DataAggregator:
 
             # 市值统计（如果有市值数据）
             market_cap_sql = f"""
-            SELECT 
-                SUM(close * total_share) as total_market_cap,
-                AVG(close * total_share) as avg_market_cap
+            SELECT
+                SUM(close * total_shares) as total_market_cap,
+                AVG(close * total_shares) as avg_market_cap
             FROM market_data h
-            JOIN ptrade_stock_info s ON h.symbol = s.symbol
-            WHERE {where_clause} AND s.total_share IS NOT NULL
+            JOIN stocks s ON h.symbol = s.symbol
+            WHERE {where_clause} AND s.total_shares IS NOT NULL
             """
 
             market_cap_stats = self.db_manager.fetchone(market_cap_sql, params)

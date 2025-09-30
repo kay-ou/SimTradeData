@@ -1013,17 +1013,22 @@ class SyncManager(BaseManager):
             if not calendar_data or not isinstance(calendar_data, list):
                 continue
 
-            # 插入数据
-            for record in calendar_data:
-                self.db_manager.execute(
-                    "INSERT OR REPLACE INTO trading_calendar (date, market, is_trading) VALUES (?, ?, ?)",
-                    (
-                        record.get("trade_date", record.get("date")),
-                        "CN",
-                        record.get("is_trading", 1),
-                    ),
+            # 批量插入数据（性能优化）
+            records_to_insert = [
+                (
+                    record.get("trade_date", record.get("date")),
+                    "CN",
+                    record.get("is_trading", 1),
                 )
-                total_inserted += 1
+                for record in calendar_data
+            ]
+
+            if records_to_insert:
+                self.db_manager.executemany(
+                    "INSERT OR REPLACE INTO trading_calendar (date, market, is_trading) VALUES (?, ?, ?)",
+                    records_to_insert,
+                )
+                total_inserted += len(records_to_insert)
 
         # 验证结果
         final_range = self.db_manager.fetchone(

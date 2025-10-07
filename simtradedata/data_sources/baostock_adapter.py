@@ -28,21 +28,22 @@ class BaoStockAdapter(BaseDataSource):
         super().__init__("baostock", config)
         self._baostock = None
 
-        # BaoStock特定配置
-        self.user_id = self.config.get("user_id", "anonymous")
-        self.password = self.config.get("password", "123456")
-
     def connect(self) -> bool:
-        """连接BaoStock"""
+        """
+        连接BaoStock
+
+        注意：BaoStock的login()是匿名接口，不需要真实用户名密码，
+        只是建立会话连接的形式调用。
+        """
         try:
             import baostock as bs
 
             self._baostock = bs
 
-            # 登录BaoStock
-            lg = bs.login(user_id=self.user_id, password=self.password)
+            # 建立会话连接（匿名，不需要真实账号）
+            lg = bs.login()
             if lg.error_code != "0":
-                raise DataSourceConnectionError(f"BaoStock登录失败: {lg.error_msg}")
+                raise DataSourceConnectionError(f"BaoStock连接失败: {lg.error_msg}")
 
             self._connected = True
             logger.info(f"BaoStock连接成功，版本: {bs.__version__}")
@@ -113,14 +114,14 @@ class BaoStockAdapter(BaseDataSource):
             if rs.error_code != "0":
                 logger.warning(f"BaoStock查询失败 {bs_symbol}: {rs.error_msg}")
 
-                # 如果是会话相关错误，尝试重新连接
+                # 如果是会话过期错误，尝试重新连接
                 if (
                     "login" in rs.error_msg.lower()
                     or "not login" in rs.error_msg.lower()
                     or "用户未登录" in rs.error_msg
                     or "未登录" in rs.error_msg
                 ):
-                    logger.info(f"检测到BaoStock会话过期，尝试重新连接...")
+                    logger.info(f"检测到BaoStock会话过期，尝试重新建立连接...")
                     self.disconnect()
                     self.connect()
 

@@ -5,12 +5,16 @@ QStock数据源适配器
 """
 
 import logging
+import threading
 from datetime import date
 from typing import Any, Dict, List, Union
 
 from .base import BaseDataSource, DataSourceDataError
 
 logger = logging.getLogger(__name__)
+
+# 全局标志：是否正在中断
+_interrupting = threading.Event()
 
 
 class QStockAdapter(BaseDataSource):
@@ -41,6 +45,40 @@ class QStockAdapter(BaseDataSource):
 
     def disconnect(self):
         """断开QStock连接"""
+        # 如果正在中断过程中，立即返回，避免阻塞
+        if _interrupting.is_set():
+            logger.debug("检测到中断，跳过QStock清理")
+            self._qstock = None
+            self._connected = False
+            return
+
+        if self._qstock is not None:
+            # 尝试清理qstock的全局session资源
+            # 由于qstock的session.close()可能阻塞很久，我们异步关闭并立即返回
+            try:
+                from qstock.data import util
+
+                if hasattr(util, "session"):
+                    # 在后台daemon线程中关闭，不等待完成
+                    def _close_session():
+                        try:
+                            util.session.close()
+                            logger.debug("QStock全局session已关闭")
+                        except Exception as e:
+                            logger.debug(f"关闭session时出错: {e}")
+
+                    close_thread = threading.Thread(target=_close_session, daemon=True)
+                    close_thread.start()
+                    # 不等待线程完成，立即返回
+                    logger.debug("QStock session正在后台关闭")
+            except KeyboardInterrupt:
+                # 如果在close过程中被中断，设置全局标志并立即返回
+                _interrupting.set()
+                logger.debug("QStock清理被中断")
+                raise
+            except Exception as e:
+                logger.debug(f"清理QStock session失败（忽略）: {e}")
+
         self._qstock = None
         self._connected = False
         logger.info("QStock连接已断开")

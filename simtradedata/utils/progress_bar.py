@@ -76,12 +76,23 @@ class SyncProgressBar:
         progress.progress_manager = self
         self.phase_progress_bars[phase_name] = progress
 
+        interrupted = False
         try:
             yield progress
+        except KeyboardInterrupt:
+            # 检测到中断，快速清理并重新抛出
+            interrupted = True
+            print(f"\r{' ' * 100}\r", end="", flush=True)  # 快速清除进度行
+            raise  # 立即重新抛出，不做任何延迟操作
         finally:
-            # 关闭进度条
-            progress.close()
-            # 清理
+            # 如果被中断，跳过所有清理操作
+            if not interrupted:
+                # 关闭进度条
+                try:
+                    progress.close()
+                except:
+                    pass  # 忽略close时的任何错误
+            # 清理引用（快速操作）
             if phase_name in self.phase_progress_bars:
                 del self.phase_progress_bars[phase_name]
 

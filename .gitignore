@@ -209,3 +209,4 @@ __marimo__/
 .augment/
 .pytest_cache/
 data/
+*snapshots/

@@ -218,8 +218,12 @@ class DataProcessingEngine(BaseManager):
                         "process_symbol_data",
                         f"数据源返回空字典: {symbol}, 日期范围: {start_date} 到 {end_date}",
                     )
+                elif "success" in raw_data and not raw_data.get("success"):
+                    # 这是一个标准的失败响应，记录为debug级别
+                    error_msg = raw_data.get("error", "未知错误")
+                    self.logger.debug(f"数据源返回失败响应: {symbol} - {error_msg}")
                 else:
-                    # 非空字典，可能是其他格式的数据，尝试处理
+                    # 非空字典且非标准失败响应，可能是其他格式的数据
                     self._log_warning(
                         "process_symbol_data",
                         f"收到字典格式数据但未能处理: {symbol}, 键: {list(raw_data.keys())}",

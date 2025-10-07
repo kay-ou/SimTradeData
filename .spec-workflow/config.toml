@@ -1,0 +1,93 @@
+# SimTradeData Spec Workflow Configuration
+# ==========================================
+#
+# 这是 SimTradeData 项目的规范工作流配置文件
+# 用于配置 Spec Workflow MCP Server 的行为
+
+# 项目目录路径
+# 指向 SimTradeData 项目的根目录
+projectDir = "/home/kay/dev/SimTradeData"
+
+# Dashboard 端口
+# Web仪表板的端口号
+# 默认使用3000端口,如有冲突可修改
+port = 3000
+
+# 自动启动 Dashboard
+# 在MCP服务器启动时自动打开Dashboard
+# 设置为 true 可以在浏览器中查看规范文档
+autoStartDashboard = false
+
+# 仅 Dashboard 模式
+# 只运行Web仪表板,不运行MCP服务器
+# 适用于独立查看规范文档
+dashboardOnly = false
+
+# 界面语言
+# 设置Dashboard的显示语言
+# 支持: "en" (英文), "zh" (中文)
+lang = "zh"
+
+# ==========================================
+# SimTradeData 项目特定配置
+# ==========================================
+
+# 项目信息
+[project]
+name = "SimTradeData"
+version = "0.1.0"
+description = "高性能金融数据系统,为SimTradeLab提供完整数据支持"
+
+# Steering Documents 路径
+[steering]
+product = ".spec-workflow/steering/product.md"
+tech = ".spec-workflow/steering/tech.md"
+structure = ".spec-workflow/steering/structure.md"
+architecture = ".spec-workflow/steering/architecture.md"
+data_sync_standards = ".spec-workflow/steering/data-sync-standards.md"
+
+# 规范模板路径
+[templates]
+requirements = ".spec-workflow/templates/requirements-template.md"
+design = ".spec-workflow/templates/design-template.md"
+tasks = ".spec-workflow/templates/tasks-template.md"
+
+# 文档输出路径
+[output]
+specs_dir = ".spec-workflow/specs"
+approvals_dir = ".spec-workflow/approvals"
+archive_dir = ".spec-workflow/archive"
+
+# 工作流配置
+[workflow]
+# 自动创建approval请求
+auto_create_approval = true
+# approval超时时间(小时)
+approval_timeout = 24
+# 是否需要approval才能继续
+require_approval = true
+
+# Dashboard配置
+[dashboard]
+# 主题: "light" 或 "dark"
+theme = "light"
+# 是否显示代码高亮
+syntax_highlighting = true
+# 是否显示Mermaid图表
+enable_mermaid = true
+
+# 通知配置
+[notifications]
+# 是否启用通知
+enabled = true
+# 通知方式: "console", "desktop", "email"
+channels = ["console"]
+
+# 开发配置
+[development]
+# 是否启用调试模式
+debug = false
+# 日志级别: "debug", "info", "warn", "error"
+log_level = "info"
+# 是否自动重载配置
+auto_reload = false

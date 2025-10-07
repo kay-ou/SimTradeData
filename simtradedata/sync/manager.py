@@ -61,31 +61,42 @@ class DataQualityValidator:
             return False
 
         # 检查是否有有效的财务指标
-        revenue = data.get("revenue", 0)
-        net_profit = data.get("net_profit", 0)
-        total_assets = data.get("total_assets", 0)
+        revenue = data.get("revenue")
+        net_profit = data.get("net_profit")
+        total_assets = data.get("total_assets")
 
         # 至少要有一个非零的主要财务指标
+        # 注意：净利润可以为负（亏损公司），但不能为 None
         return (
-            (revenue and revenue > 0)
-            or (total_assets and total_assets > 0)
-            or (net_profit != 0)  # 净利润可以为负
+            (revenue is not None and revenue > 0)
+            or (total_assets is not None and total_assets > 0)
+            or (net_profit is not None and net_profit != 0)  # 净利润可以为负
         )
 
     @staticmethod
     def is_valid_valuation_data(data: Dict[str, Any]) -> bool:
-        """验证估值数据有效性"""
+        """
+        验证估值数据有效性（放宽版本）
+
+        只要有任何一个估值指标有效即可认为数据有效
+        """
         if not data or not isinstance(data, dict):
             return False
 
         pe_ratio = data.get("pe_ratio", 0)
         pb_ratio = data.get("pb_ratio", 0)
+        ps_ratio = data.get("ps_ratio", 0)
+        pcf_ratio = data.get("pcf_ratio", 0)
 
-        # PE/PB应该为正数且在合理范围内
-        # 移除对market_cap的依赖，因为市值现在是计算值而非存储值
-        return (pe_ratio and 0 < pe_ratio < SyncConstants.MAX_PE_RATIO) or (
-            pb_ratio and 0 < pb_ratio < SyncConstants.MAX_PB_RATIO
-        )
+        # 只要有任何一个估值指标存在且不为None就认为有效
+        # 允许负数PE(亏损公司)和0值
+        has_pe = pe_ratio is not None
+        has_pb = pb_ratio is not None and pb_ratio != 0
+        has_ps = ps_ratio is not None and ps_ratio != 0
+        has_pcf = pcf_ratio is not None and pcf_ratio != 0
+
+        # 至少有一个有效指标
+        return has_pe or has_pb or has_ps or has_pcf
 
     @staticmethod
     def is_valid_report_date(report_date: str, symbol: Optional[str] = None) -> bool:
@@ -1059,6 +1070,8 @@ class SyncManager(BaseManager):
             target_date: 目标日期，用于获取该日期的股票列表
         """
         if target_date is None:
+            from datetime import datetime
+
             target_date = datetime.now().date()
 
         self.logger.info("🔄 开始股票列表增量更新（优化版本）...")
@@ -1118,8 +1131,10 @@ class SyncManager(BaseManager):
                     }
 
             # 获取股票信息 - 使用目标日期的股票列表（避免幸存者偏差）
-            # 直接使用 BaoStock 以支持历史日期查询
+            # BaoStock支持指定日期查询，确保获取目标日期的股票列表
             self.logger.info(f"🔄 开始获取股票信息（目标日期: {target_date}）...")
+
+            # 直接调用BaoStock适配器，传递target_date参数
             baostock_source = self.data_source_manager.get_source("baostock")
             if not baostock_source:
                 raise ValidationError("BaoStock数据源不可用")
@@ -1127,9 +1142,10 @@ class SyncManager(BaseManager):
             if not baostock_source.is_connected():
                 baostock_source.connect()
 
-            # BaoStock 支持指定日期查询，确保获取目标日期的股票列表
-            # 修改 get_stock_info 以支持日期参数
-            stock_info = baostock_source.get_stock_info(target_date=str(target_date))
+            # 调用BaoStock的get_stock_info，支持target_date参数
+            stock_info = baostock_source.get_stock_info(
+                symbol=None, target_date=str(target_date)
+            )
 
             # BaoStock直接返回列表，验证数据格式
             if not isinstance(stock_info, list):
@@ -1186,6 +1202,31 @@ class SyncManager(BaseManager):
                             symbol = f"{symbol}.SZ"
                         elif symbol.startswith("6") or symbol.startswith("9"):
                             symbol = f"{symbol}.SS"
+
+                    # 过滤指数代码
+                    # 上证指数: 000001-000999.SS
+                    # 深证指数: 399001-399999.SZ
+                    code_part = symbol.split(".")[0]
+                    market_part = symbol.split(".")[-1] if "." in symbol else ""
+
+                    if code_part.isdigit() and len(code_part) == 6:
+                        code_num = int(code_part)
+                        is_index = False
+
+                        # 上海指数: 000001-000999.SS
+                        if market_part == "SS" and code_num >= 1 and code_num <= 999:
+                            is_index = True
+                        # 深圳指数: 399001-399999.SZ
+                        elif (
+                            market_part == "SZ"
+                            and code_num >= 399001
+                            and code_num <= 399999
+                        ):
+                            is_index = True
+
+                        if is_index:
+                            self.logger.debug(f"跳过指数代码: {symbol} ({name})")
+                            continue
 
                     processed_stocks.append(
                         {"symbol": symbol, "name": name, "market": market}
@@ -1591,11 +1632,48 @@ class SyncManager(BaseManager):
 
         self.logger.info(f"📊 开始处理: {len(symbols)}只股票")
 
-        # 🚀 优化1: 批量导入财务数据（当股票数量>50时启用批量模式）
-        batch_threshold = 50
+        # 🚀 优化1: 批量导入财务数据
+        # 批量模式判断: 基于数据库总股票数，而不是待处理股票数
+        # 原因: mootdx批量导入会下载包含所有5000+股票的文件，无论实际需要多少
+        total_stocks_result = self.db_manager.fetchone(
+            "SELECT COUNT(*) as count FROM stocks WHERE status='active'"
+        )
+        total_stocks = total_stocks_result["count"] if total_stocks_result else 0
+
+        batch_threshold = 50  # 待处理股票阈值
+        total_threshold = 500  # 数据库总股票阈值
+
+        # 智能批量模式判断
+        should_use_batch = (total_stocks >= total_threshold) or (
+            len(symbols) >= batch_threshold
+        )
+
+        # 输出详细决策信息
+        decision_msg = f"""
+                        {'='*70}
+                        📊 批量模式决策:
+                        - 数据库总股票: {total_stocks}
+                        - 需要处理: {len(symbols)}
+                        - 待处理阈值: {batch_threshold}
+                        - 总库存阈值: {total_threshold}
+                        - 批量模式: {should_use_batch}
+                        {'='*70}
+                        """
+        print(decision_msg, flush=True)  # 强制输出到stdout
+        self.logger.info(f"📊 批量模式决策:")
+        self.logger.info(f"  - 数据库总股票: {total_stocks}")
+        self.logger.info(f"  - 需要处理: {len(symbols)}")
+        self.logger.info(f"  - 待处理阈值: {batch_threshold}")
+        self.logger.info(f"  - 总库存阈值: {total_threshold}")
+        self.logger.info(f"  - 批量模式: {should_use_batch}")
+
         financial_data_map = {}  # symbol -> financial_data
 
-        if len(symbols) >= batch_threshold:
+        if should_use_batch:
+            print(
+                f"⚡ 检测到批量场景({len(symbols)}只股票)，启用批量财务数据导入",
+                flush=True,
+            )
             self.logger.info(
                 f"⚡ 检测到批量场景({len(symbols)}只股票)，启用批量财务数据导入"
             )
@@ -1607,6 +1685,7 @@ class SyncManager(BaseManager):
                 report_date_str = f"{report_year}-12-31"
 
                 # 批量导入所有股票的财务数据
+                print(f"开始批量导入财务数据: {report_date_str}", flush=True)
                 self.logger.info(f"开始批量导入财务数据: {report_date_str}")
                 batch_result = self.data_source_manager.batch_import_financial_data(
                     report_date_str, "Q4"
@@ -1660,6 +1739,7 @@ class SyncManager(BaseManager):
                             f"开始构建财务数据映射，symbols数量: {len(symbols)}, records数量: {len(actual_records)}"
                         )
 
+                        # 构建财务数据映射
                         for record in actual_records:
                             symbol = record.get("symbol")
                             if symbol in symbols:  # 只处理需要同步的股票
@@ -1686,12 +1766,18 @@ class SyncManager(BaseManager):
                         self.logger.info(
                             f"✅ 批量导入完成: 获取到 {len(financial_data_map)} 只股票的财务数据"
                         )
+                        print(
+                            f"✅ 批量导入完成: 获取到 {len(financial_data_map)} 只股票的财务数据",
+                            flush=True,
+                        )
                 else:
                     self.logger.warning(f"批量导入失败，将回退到逐个查询模式")
+                    print(f"⚠️  批量导入失败，将回退到逐个查询模式", flush=True)
                     result["batch_mode"] = False
 
             except Exception as e:
                 self.logger.error(f"批量导入财务数据失败: {e}")
+                print(f"❌ 批量导入财务数据失败: {e}", flush=True)
                 self.logger.warning("将回退到逐个查询模式")
                 result["batch_mode"] = False
 
@@ -1819,180 +1905,197 @@ class SyncManager(BaseManager):
             "indicators_count": 0,
         }
 
-        try:
-            # 开始事务
-            self.db_manager.execute("BEGIN TRANSACTION")
+        # 检查是否已经处理过这只股票（在事务外检查，避免不必要的事务）
+        existing_status = self.db_manager.fetchone(
+            "SELECT status FROM extended_sync_status WHERE symbol = ? AND target_date = ? AND status = 'completed'",
+            (symbol, str(target_date)),
+        )
 
-            # 检查是否已经处理过这只股票
-            existing_status = self.db_manager.fetchone(
-                "SELECT status FROM extended_sync_status WHERE symbol = ? AND target_date = ? AND status = 'completed'",
-                (symbol, str(target_date)),
-            )
-
-            if existing_status:
-                self.logger.debug(f"⏭️ 跳过已完成的股票: {symbol}")
-                result["success"] = True
-                self.db_manager.execute("COMMIT")
-                return result
-
-            # 标记开始处理
-            self.db_manager.execute(
-                "INSERT OR REPLACE INTO extended_sync_status (symbol, sync_type, target_date, status, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-                (symbol, "processing", str(target_date), "processing", session_id),
-            )
-
-            # 数据获取成功标志
-            financial_success = False
-            valuation_success = False
-
-            # 处理财务数据
-            report_year = target_date.year - 1  # 使用去年年报
-            report_date_str = f"{report_year}-12-31"
-
-            # 验证报告期有效性
-            if DataQualityValidator.is_valid_report_date(report_date_str, symbol):
-                try:
-                    # 🚀 优化: 优先使用预加载的财务数据（批量模式）
-                    if preloaded_financial and preloaded_financial.get("data"):
-                        self.logger.debug(f"使用预加载的财务数据: {symbol}")
-                        financial_data = preloaded_financial["data"]
-                        data_source = "mootdx_batch"  # 标记为批量导入
-                    else:
-                        # 回退: 逐个查询（单股模式或批量失败时）
-                        self.logger.debug(f"逐个查询财务数据: {symbol}")
-                        financial_result = self.data_source_manager.get_fundamentals(
-                            symbol, report_date_str, "Q4"
-                        )
-
-                        # 标准数据源响应格式解包
-                        financial_data = self._extract_data_safely(financial_result)
-
-                        # 获取数据来源
-                        data_source = (
-                            financial_result.get("source", "unknown")
-                            if isinstance(financial_result, dict)
-                            else "unknown"
-                        )
-
-                    # 使用放宽的验证标准
-                    if financial_data and self._is_valid_financial_data_relaxed(
-                        financial_data
-                    ):
-                        self._insert_financial_data(
-                            financial_data, symbol, report_date_str, data_source
-                        )
-                        result["financials_count"] += 1
-                        financial_success = True
-                        self.logger.debug(f"{data_source}财务数据插入成功: {symbol}")
-                    else:
-                        self.logger.debug(f"财务数据无效: {symbol}")
-
-                except Exception as e:
-                    self.logger.warning(f"获取财务数据失败: {symbol} - {e}")
-            else:
-                self.logger.warning(f"跳过无效报告期: {symbol} {report_date_str}")
-
-            # 处理估值数据
-            try:
-                # 使用DataSourceManager统一获取估值数据（根据优先级配置）
-                valuation_result = self.data_source_manager.get_valuation_data(
-                    symbol, str(target_date)
-                )
-
-                # 标准数据源响应格式解包
-                valuation_data = self._extract_data_safely(valuation_result)
-
-                # 获取数据来源
-                data_source = (
-                    valuation_result.get("source", "unknown")
-                    if isinstance(valuation_result, dict)
-                    else "unknown"
-                )
-
-                # 验证估值数据有效性
-                if valuation_data and DataQualityValidator.is_valid_valuation_data(
-                    valuation_data
-                ):
-                    # 检查是否已存在该记录
-                    record_date = valuation_data.get("date", str(target_date))
-                    existing = self.db_manager.fetchone(
-                        "SELECT COUNT(*) as count FROM valuations WHERE symbol = ? AND date = ?",
-                        (symbol, record_date),
-                    )
-
-                    if existing and existing["count"] == 0:
-                        self.db_manager.execute(
-                            """INSERT INTO valuations
-                            (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, source, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                            (
-                                symbol,
-                                record_date,
-                                valuation_data.get("pe_ratio"),
-                                valuation_data.get("pb_ratio"),
-                                valuation_data.get("ps_ratio"),
-                                valuation_data.get("pcf_ratio"),
-                                data_source,
-                            ),
-                        )
-                        result["valuations_count"] += 1
-                        valuation_success = True
-                        self.logger.debug(f"{data_source}估值数据插入成功: {symbol}")
-                    else:
-                        self.logger.debug(f"估值数据已存在，跳过: {symbol}")
-                else:
-                    self.logger.debug(f"估值数据无效: {symbol}")
-
-            except Exception as e:
-                self.logger.warning(f"获取估值数据失败: {symbol} - {e}")
-
-            # 处理技术指标（暂时跳过，标记为成功）
-
-            # 根据数据获取结果决定最终状态（使用分级标准）
-            failure_reasons = []
-
-            if financial_success:
-                final_status = "completed"  # 有财务数据就算完成
-                result["success"] = True
-                self.logger.debug(
-                    f"数据获取成功: {symbol} (财务:{financial_success}, 估值:{valuation_success})"
-                )
-            elif valuation_success:
-                final_status = "partial"  # 只有估值数据算部分完成
-                result["success"] = True
-                self.logger.debug(f"部分数据获取成功: {symbol} (仅估值数据)")
-            else:
-                final_status = "failed"
-                result["success"] = False
-
-                # 收集具体的失败原因
-                if not financial_success:
-                    failure_reasons.append("财务数据")
-                if not valuation_success:
-                    failure_reasons.append("估值数据")
-
-                # 检查股票上市状态和失败原因
-                self._log_data_failure_with_context(
-                    symbol, target_date, failure_reasons
-                )
-
-            # 更新最终状态
-            self.db_manager.execute(
-                "UPDATE extended_sync_status SET status = ?, updated_at = datetime('now') WHERE symbol = ? AND target_date = ? AND session_id = ?",
-                (final_status, symbol, str(target_date), session_id),
-            )
-
-            # 提交事务
-            self.db_manager.execute("COMMIT")
+        if existing_status:
+            self.logger.debug(f"⏭️ 跳过已完成的股票: {symbol}")
+            result["success"] = True
             return result
 
+        try:
+            # 使用事务上下文管理器
+            with self.db_manager.transaction() as conn:
+                # 标记开始处理
+                conn.execute(
+                    "INSERT OR REPLACE INTO extended_sync_status (symbol, sync_type, target_date, status, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+                    (symbol, "processing", str(target_date), "processing", session_id),
+                )
+
+                # 数据获取成功标志
+                financial_success = False
+                valuation_success = False
+
+                # 处理财务数据
+                report_year = target_date.year - 1  # 使用去年年报
+                report_date_str = f"{report_year}-12-31"
+
+                # 验证报告期有效性
+                if DataQualityValidator.is_valid_report_date(report_date_str, symbol):
+                    try:
+                        # 🚀 优化: 优先使用预加载的财务数据（批量模式）
+                        if preloaded_financial and preloaded_financial.get("data"):
+                            self.logger.debug(f"使用预加载的财务数据: {symbol}")
+                            financial_data = preloaded_financial["data"]
+                            data_source = "mootdx_batch"  # 标记为批量导入
+                        else:
+                            # 回退: 逐个查询（单股模式或批量失败时）
+                            self.logger.debug(f"逐个查询财务数据: {symbol}")
+                            financial_result = (
+                                self.data_source_manager.get_fundamentals(
+                                    symbol, report_date_str, "Q4"
+                                )
+                            )
+
+                            # 标准数据源响应格式解包
+                            financial_data = self._extract_data_safely(financial_result)
+
+                            # 🔧 修复：可能有嵌套的success/data结构，需要再次解包
+                            if (
+                                isinstance(financial_data, dict)
+                                and "success" in financial_data
+                                and "data" in financial_data
+                            ):
+                                if financial_data.get("success"):
+                                    financial_data = financial_data["data"]
+
+                            # 获取数据来源
+                            data_source = (
+                                financial_result.get("source", "unknown")
+                                if isinstance(financial_result, dict)
+                                else "unknown"
+                            )
+
+                        # 使用放宽的验证标准
+                        if financial_data and self._is_valid_financial_data_relaxed(
+                            financial_data
+                        ):
+                            self._insert_financial_data(
+                                financial_data, symbol, report_date_str, data_source
+                            )
+                            result["financials_count"] += 1
+                            financial_success = True
+                            self.logger.debug(
+                                f"{data_source}财务数据插入成功: {symbol}"
+                            )
+                        else:
+                            self.logger.debug(f"财务数据无效: {symbol}")
+
+                    except Exception as e:
+                        self.logger.warning(f"获取财务数据失败: {symbol} - {e}")
+                else:
+                    self.logger.warning(f"跳过无效报告期: {symbol} {report_date_str}")
+
+                # 处理估值数据
+                try:
+                    # 使用DataSourceManager统一获取估值数据（根据优先级配置）
+                    valuation_result = self.data_source_manager.get_valuation_data(
+                        symbol, str(target_date)
+                    )
+
+                    # 标准数据源响应格式解包
+                    valuation_data = self._extract_data_safely(valuation_result)
+
+                    # 获取数据来源
+                    data_source = (
+                        valuation_result.get("source", "unknown")
+                        if isinstance(valuation_result, dict)
+                        else "unknown"
+                    )
+
+                    # 验证估值数据有效性
+                    if valuation_data and DataQualityValidator.is_valid_valuation_data(
+                        valuation_data
+                    ):
+                        # 检查是否已存在该记录
+                        record_date = valuation_data.get("date", str(target_date))
+                        existing = conn.execute(
+                            "SELECT COUNT(*) as count FROM valuations WHERE symbol = ? AND date = ?",
+                            (symbol, record_date),
+                        ).fetchone()
+
+                        if existing and existing[0] == 0:
+                            conn.execute(
+                                """INSERT INTO valuations
+                                (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, source, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                                (
+                                    symbol,
+                                    record_date,
+                                    valuation_data.get("pe_ratio"),
+                                    valuation_data.get("pb_ratio"),
+                                    valuation_data.get("ps_ratio"),
+                                    valuation_data.get("pcf_ratio"),
+                                    data_source,
+                                ),
+                            )
+                            self.logger.debug(
+                                f"{data_source}估值数据插入成功: {symbol}"
+                            )
+                        else:
+                            self.logger.debug(f"估值数据已存在，跳过插入: {symbol}")
+
+                        # 无论是新插入还是已存在，都标记为成功并计数
+                        result["valuations_count"] += 1
+                        valuation_success = True
+                    else:
+                        self.logger.debug(f"估值数据无效: {symbol}")
+
+                except Exception as e:
+                    self.logger.warning(f"获取估值数据失败: {symbol} - {e}")
+
+                # 处理技术指标（暂时跳过，标记为成功）
+
+                # 根据数据获取结果决定最终状态（使用分级标准）
+                failure_reasons = []
+
+                if financial_success:
+                    final_status = "completed"  # 有财务数据就算完成
+                    result["success"] = True
+                    self.logger.debug(
+                        f"数据获取成功: {symbol} (财务:{financial_success}, 估值:{valuation_success})"
+                    )
+                elif valuation_success:
+                    final_status = "partial"  # 只有估值数据算部分完成
+                    result["success"] = True
+                    self.logger.debug(f"部分数据获取成功: {symbol} (仅估值数据)")
+                else:
+                    final_status = "failed"
+                    result["success"] = False
+
+                    # 收集具体的失败原因
+                    if not financial_success:
+                        failure_reasons.append("财务数据")
+                    if not valuation_success:
+                        failure_reasons.append("估值数据")
+
+                    # 检查股票上市状态和失败原因
+                    self._log_data_failure_with_context(
+                        symbol, target_date, failure_reasons
+                    )
+
+                # 计算总记录数
+                total_records = (
+                    result["financials_count"]
+                    + result["valuations_count"]
+                    + result["indicators_count"]
+                )
+
+                # 更新最终状态和记录数
+                conn.execute(
+                    "UPDATE extended_sync_status SET status = ?, records_count = ?, updated_at = datetime('now') WHERE symbol = ? AND target_date = ? AND session_id = ?",
+                    (final_status, total_records, symbol, str(target_date), session_id),
+                )
+
+                # 事务将由上下文管理器自动提交
+                return result
+
         except Exception as e:
-            # 回滚事务
-            try:
-                self.db_manager.execute("ROLLBACK")
-            except:
-                pass  # 忽略回滚错误
-            self.logger.error(f"同步股票失败，事务回滚: {symbol} - {e}")
+            # 事务将由上下文管理器自动回滚
+            self.logger.error(f"同步股票失败: {symbol} - {e}")
             result["success"] = False
             return result
 
@@ -2121,20 +2224,52 @@ class SyncManager(BaseManager):
             return False
 
         # 检查是否有任何有效的财务指标（放宽标准）
-        revenue = data.get("revenue", 0)
-        net_profit = data.get("net_profit", 0)
-        total_assets = data.get("total_assets", 0)
-        shareholders_equity = data.get("shareholders_equity", 0)
-        eps = data.get("eps", 0)
+        revenue = data.get("revenue")
+        net_profit = data.get("net_profit")
+        total_assets = data.get("total_assets")
+        shareholders_equity = data.get("shareholders_equity")
+        eps = data.get("eps")
 
-        # 只要有一个非空/非零的财务指标就认为有效
+        # 只要有一个字段不为None就认为有效（允许0值）
         return (
-            (revenue and revenue != 0)
-            or (total_assets and total_assets != 0)
-            or (shareholders_equity and shareholders_equity != 0)
-            or (net_profit != 0)  # 净利润可以为负
-            or (eps and eps != 0)  # 每股收益可以为负
+            revenue is not None
+            or net_profit is not None
+            or total_assets is not None
+            or shareholders_equity is not None
+            or eps is not None
         )
+
+    def _safe_extract_numeric(self, value: Any, default: float = 0.0) -> float:
+        """
+        安全提取数值，处理各种异常情况
+
+        Args:
+            value: 待转换的值
+            default: 默认值
+
+        Returns:
+            浮点数或默认值
+        """
+        # 处理None或空字符串
+        if value is None or value == "":
+            return default
+
+        # 处理字典类型（错误情况）
+        if isinstance(value, dict):
+            self.logger.debug(f"财务数据包含字典类型: {value}，使用默认值")
+            return default
+
+        # 处理列表类型（错误情况）
+        if isinstance(value, (list, tuple)):
+            self.logger.debug(f"财务数据包含列表类型: {value}，使用默认值")
+            return default
+
+        # 尝试转换为浮点数
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            self.logger.debug(f"无法转换为数值: {value}，使用默认值")
+            return default
 
     def _insert_financial_data(
         self,
@@ -2145,6 +2280,7 @@ class SyncManager(BaseManager):
     ):
         """插入财务数据到数据库"""
         try:
+            # 使用安全提取函数处理所有数值字段
             self.db_manager.execute(
                 """INSERT OR REPLACE INTO financials (
                     symbol, report_date, report_type, revenue, operating_profit, net_profit,
@@ -2156,22 +2292,30 @@ class SyncManager(BaseManager):
                     symbol,
                     report_date_str,
                     "Q4",
-                    financial_data.get("revenue", 0),
-                    financial_data.get("operating_profit", 0),
-                    financial_data.get("net_profit", 0),
-                    financial_data.get("gross_margin", 0),
-                    financial_data.get("net_margin", 0),
-                    financial_data.get("total_assets", 0),
-                    financial_data.get("total_liabilities", 0),
-                    financial_data.get("shareholders_equity", 0),
-                    financial_data.get("operating_cash_flow", 0),
-                    financial_data.get("investing_cash_flow", 0),
-                    financial_data.get("financing_cash_flow", 0),
-                    financial_data.get("eps", 0),
-                    financial_data.get("bps", 0),
-                    financial_data.get("roe", 0),
-                    financial_data.get("roa", 0),
-                    financial_data.get("debt_ratio", 0),
+                    self._safe_extract_numeric(financial_data.get("revenue")),
+                    self._safe_extract_numeric(financial_data.get("operating_profit")),
+                    self._safe_extract_numeric(financial_data.get("net_profit")),
+                    self._safe_extract_numeric(financial_data.get("gross_margin")),
+                    self._safe_extract_numeric(financial_data.get("net_margin")),
+                    self._safe_extract_numeric(financial_data.get("total_assets")),
+                    self._safe_extract_numeric(financial_data.get("total_liabilities")),
+                    self._safe_extract_numeric(
+                        financial_data.get("shareholders_equity")
+                    ),
+                    self._safe_extract_numeric(
+                        financial_data.get("operating_cash_flow")
+                    ),
+                    self._safe_extract_numeric(
+                        financial_data.get("investing_cash_flow")
+                    ),
+                    self._safe_extract_numeric(
+                        financial_data.get("financing_cash_flow")
+                    ),
+                    self._safe_extract_numeric(financial_data.get("eps")),
+                    self._safe_extract_numeric(financial_data.get("bps")),
+                    self._safe_extract_numeric(financial_data.get("roe")),
+                    self._safe_extract_numeric(financial_data.get("roa")),
+                    self._safe_extract_numeric(financial_data.get("debt_ratio")),
                     source,
                 ),
             )

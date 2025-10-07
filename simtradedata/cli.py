@@ -484,7 +484,11 @@ def main():
 
     except KeyboardInterrupt:
         logger.info("用户中断操作")
-        return 1
+        # 使用os._exit()强制退出，跳过所有清理和析构函数
+        # 这样可以避免qstock session.close()阻塞
+        import os
+
+        os._exit(1)
     except Exception as e:
         logger.error(f"执行失败: {e}")
         return 1

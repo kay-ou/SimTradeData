@@ -394,12 +394,26 @@ class MootdxAdapter(BaseDataSource):
                         # 获取该股票的财务数据
                         stock_data = df.loc[tdx_symbol]
 
+                        # 转换为字典，过滤掉字典类型的值（可能是其他股票的数据）
+                        raw_dict = stock_data.to_dict()
+
+                        # 清理数据：移除字典类型的值（这些是DataFrame宽格式导致的多余列）
+                        cleaned_dict = {}
+                        for key, value in raw_dict.items():
+                            # 只保留基本类型的值
+                            if not isinstance(value, (dict, list, tuple)):
+                                cleaned_dict[key] = value
+                            else:
+                                logger.debug(
+                                    f"批量导入: 跳过非标量字段 {key} = {value}"
+                                )
+
                         # 转换为字典（简化版本）
                         record = {
                             "symbol": symbol,
                             "report_date": report_date,
                             "report_type": report_type,
-                            "data": stock_data.to_dict(),  # 原始数据，保留所有字段
+                            "data": cleaned_dict,  # 清理后的数据
                         }
 
                         records.append(record)

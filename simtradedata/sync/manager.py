@@ -1936,7 +1936,7 @@ class SyncManager(BaseManager):
                         else:
                             # 股票已上市但数据获取失败，这可能是数据源问题或股票状态异常
                             failure_detail = ", ".join(failure_reasons)
-                            self.logger.warning(
+                            self.logger.debug(
                                 f"数据获取失败: {symbol} ({failure_detail}) - 股票已上市但无可用数据"
                             )
                             return

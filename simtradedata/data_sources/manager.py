@@ -15,6 +15,7 @@ from ..config import Config
 from ..core import BaseManager, ValidationError, unified_error_handler
 from .baostock_adapter import BaoStockAdapter
 from .base import BaseDataSource
+from .connection_manager import ConnectionManager
 from .mootdx_adapter import MootdxAdapter
 from .qstock_adapter import QStockAdapter
 
@@ -45,10 +46,25 @@ class DataSourceManager(BaseManager):
         self.retry_delay = self._get_config("retry_delay", 1)
         self.health_check_interval = self._get_config("health_check_interval", 300)
 
+        # 连接管理配置
+        self.connection_manager_enabled = self.config.get(
+            "performance.connection_manager.enable", True
+        )
+        self.connection_manager_session_timeout = self.config.get(
+            "performance.connection_manager.session_timeout", 600
+        )
+        self.connection_manager_heartbeat_interval = self.config.get(
+            "performance.connection_manager.heartbeat_interval", 60
+        )
+        self.connection_manager_lock_timeout = self.config.get(
+            "performance.connection_manager.lock_timeout", 10.0
+        )
+
     def _init_components(self):
         """初始化组件"""
         self.sources: Dict[str, BaseDataSource] = {}
         self.source_status: Dict[str, Dict] = {}
+        self.connection_managers: Dict[str, ConnectionManager] = {}  # 连接管理器字典
 
         # 注册数据源适配器
         self._register_adapters()
@@ -93,6 +109,16 @@ class DataSourceManager(BaseManager):
                         "error_count": 0,
                         "last_error": None,
                     }
+
+                    # 为 BaoStock 创建 ConnectionManager
+                    if source_name == "baostock" and self.connection_manager_enabled:
+                        self.connection_managers[source_name] = ConnectionManager(
+                            adapter=source,
+                            session_timeout=self.connection_manager_session_timeout,
+                            heartbeat_interval=self.connection_manager_heartbeat_interval,
+                            lock_timeout=self.connection_manager_lock_timeout,
+                        )
+                        self.logger.info(f"为 {source_name} 创建 ConnectionManager")
 
                     self.logger.info(f"数据源 {source_name} 注册成功")
 
@@ -281,15 +307,39 @@ class DataSourceManager(BaseManager):
         source = self.sources[source_name]
 
         try:
-            # 确保连接（只在首次使用时连接，之后保持连接状态）
-            if not source.is_connected():
-                self.logger.debug(f"数据源 {source_name} 未连接，正在建立连接...")
-                source.connect()
+            # 对于 BaoStock,使用 ConnectionManager 管理连接和线程安全
+            if source_name == "baostock" and source_name in self.connection_managers:
+                conn_mgr = self.connection_managers[source_name]
+
+                # 确保连接有效
+                if not conn_mgr.ensure_connected():
+                    raise ValidationError(f"无法建立 {source_name} 连接")
+
                 self.source_status[source_name]["connected"] = True
 
-            # 调用方法
-            method = getattr(source, method_name)
-            result = method(*args, **kwargs)
+                # 获取访问锁
+                if not conn_mgr.acquire_lock():
+                    raise ValidationError(f"获取 {source_name} 访问锁超时")
+
+                try:
+                    # 调用方法
+                    method = getattr(source, method_name)
+                    result = method(*args, **kwargs)
+                finally:
+                    # 释放访问锁
+                    conn_mgr.release_lock()
+
+            else:
+                # 其他数据源使用原有逻辑
+                # 确保连接（只在首次使用时连接，之后保持连接状态）
+                if not source.is_connected():
+                    self.logger.debug(f"数据源 {source_name} 未连接，正在建立连接...")
+                    source.connect()
+                    self.source_status[source_name]["connected"] = True
+
+                # 调用方法
+                method = getattr(source, method_name)
+                result = method(*args, **kwargs)
 
             # 在结果中添加数据源信息
             if isinstance(result, dict) and result:
@@ -706,6 +756,17 @@ class DataSourceManager(BaseManager):
 
     def disconnect_all(self):
         """断开所有数据源连接"""
+        # 先断开连接管理器
+        for source_name, conn_mgr in self.connection_managers.items():
+            try:
+                conn_mgr.disconnect()
+                self.logger.info(f"ConnectionManager for {source_name} 已断开")
+            except Exception as e:
+                self._log_error(
+                    "disconnect_connection_manager", e, source_name=source_name
+                )
+
+        # 再断开数据源
         for source_name, source in self.sources.items():
             try:
                 source.disconnect()

@@ -84,7 +84,12 @@ sync:
   auto_gap_fix: true
   max_gap_days: 30
   max_concurrent_tasks: 5
-  batch_size: 100
+  batch_size: 50  # 优化: 平衡性能和内存
+  max_workers: 3  # 优化: 最优并发数
+  enable_smart_backfill: true  # 优化: 启用智能补充
+  backfill_batch_size: 50  # 智能补充批次大小
+  backfill_sample_size: 10  # 抽样检查大小
+  max_sync_days: 30  # 限制单次同步范围
   minute_data_retention_days: 30   # 分钟线数据保留30天
   daily_data_retention_days: 1095  # 日线数据保留3年
 
@@ -96,6 +101,34 @@ query:
   cache_ttl_seconds: 300  # 缓存5分钟
   parallel_query_enabled: true
   max_parallel_queries: 10
+
+# 性能优化配置
+performance:
+  # 连接管理配置
+  connection_manager:
+    enable: true
+    session_timeout: 600  # 会话超时(秒),默认10分钟
+    heartbeat_interval: 60  # 心跳间隔(秒),默认1分钟
+    lock_timeout: 10  # 锁等待超时(秒)
+
+  # 批量写入配置(待实现)
+  batch_writer:
+    enable: true
+    batch_size: 100
+    auto_flush: true
+
+  # 缓存配置(待实现)
+  cache:
+    enable: true
+    max_size_mb: 500
+    trading_calendar_ttl: 604800  # 7天
+    stock_metadata_ttl: 86400  # 1天
+
+  # 性能监控配置(待实现)
+  monitor:
+    enable: true
+    detailed_logging: true
+    report_format: "json"
 
 # 日志配置
 logging:

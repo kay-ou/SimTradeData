@@ -16,6 +16,7 @@ from .alert_system import (
     LogNotifier,
 )
 from .data_quality import DataQualityMonitor
+from .performance_monitor import PerformanceMonitor, PerformanceReport, PhaseStats
 
 __all__ = [
     "DataQualityMonitor",
@@ -28,4 +29,7 @@ __all__ = [
     "LogNotifier",
     "ConsoleNotifier",
     "AlertRuleFactory",
+    "PerformanceMonitor",
+    "PerformanceReport",
+    "PhaseStats",
 ]

@@ -13,6 +13,9 @@ from ..config import Config
 from ..core import extract_data_safely
 from ..data_sources import DataSourceManager
 from ..database import DatabaseManager
+from ..database.batch_writer import BatchWriter
+from ..monitoring import PerformanceMonitor
+from ..performance.cache_manager import CacheManager
 from ..preprocessor import DataProcessingEngine
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,47 @@ class IncrementalSync:
         self.backfill_batch_size = self.config.get("sync.backfill_batch_size", 50)
         self.backfill_sample_size = self.config.get("sync.backfill_sample_size", 10)
 
+        # 批量写入配置
+        self.enable_batch_writer = self.config.get(
+            "performance.batch_writer.enable", True
+        )
+        self.batch_write_size = self.config.get(
+            "performance.batch_writer.batch_size", 100
+        )
+
+        # 缓存配置
+        self.enable_cache = self.config.get("performance.cache.enable", True)
+
+        # 初始化缓存管理器
+        self.cache_manager = None
+        if self.enable_cache:
+            try:
+                self.cache_manager = CacheManager(config=self.config)
+                logger.info("缓存管理器初始化成功")
+            except Exception as e:
+                logger.warning(f"缓存管理器初始化失败: {e}，将禁用缓存功能")
+                self.enable_cache = False
+
+        # 性能监控配置
+        self.enable_performance_monitor = self.config.get(
+            "performance.monitor.enable", True
+        )
+        self.enable_resource_monitoring = self.config.get(
+            "performance.monitor.enable_resource_monitoring", False
+        )
+
+        # 初始化性能监控器
+        self.performance_monitor = None
+        if self.enable_performance_monitor:
+            try:
+                self.performance_monitor = PerformanceMonitor(
+                    enable_resource_monitoring=self.enable_resource_monitoring
+                )
+                logger.info("性能监控器初始化成功")
+            except Exception as e:
+                logger.warning(f"性能监控器初始化失败: {e}，将禁用性能监控功能")
+                self.enable_performance_monitor = False
+
         # 同步统计
         self.sync_stats = {
             "total_symbols": 0,
@@ -95,6 +139,10 @@ class IncrementalSync:
         try:
             logger.info(f"开始增量同步: 目标日期={target_date}, 频率={frequencies}")
 
+            # 🎯 开始性能监控
+            if self.enable_performance_monitor and self.performance_monitor:
+                self.performance_monitor.start_phase("total")
+
             # 重置统计
             self._reset_stats()
 
@@ -103,6 +151,47 @@ class IncrementalSync:
                 symbols = self._get_active_symbols()
 
             self.sync_stats["total_symbols"] = len(symbols)
+
+            # 🚀 缓存预加载阶段
+            if self.enable_cache and self.cache_manager:
+                try:
+                    logger.info("开始预加载缓存...")
+
+                    # 预加载交易日历（最近2年）
+                    calendar_start = target_date - timedelta(days=730)  # 2年
+                    calendar_result = self.cache_manager.load_trading_calendar(
+                        self.db_manager, calendar_start, target_date, market="CN"
+                    )
+
+                    # 处理 unified_error_handler 包装的返回值
+                    if isinstance(calendar_result, dict) and "data" in calendar_result:
+                        calendar_count = calendar_result["data"]
+                    else:
+                        calendar_count = calendar_result
+
+                    logger.info(f"预加载交易日历: {calendar_count} 天")
+
+                    # 预加载活跃股票元数据
+                    if symbols:
+                        metadata_result = self.cache_manager.load_stock_metadata_batch(
+                            self.db_manager, symbols
+                        )
+
+                        # 处理 unified_error_handler 包装的返回值
+                        if (
+                            isinstance(metadata_result, dict)
+                            and "data" in metadata_result
+                        ):
+                            metadata_count = metadata_result["data"]
+                        else:
+                            metadata_count = metadata_result
+
+                        logger.info(f"预加载股票元数据: {metadata_count} 只股票")
+
+                except Exception as cache_error:
+                    logger.warning(
+                        f"缓存预加载失败: {cache_error}，将继续使用数据库查询"
+                    )
 
             # 🚀 智能补充阶段：检查并补充历史数据的衍生字段
             backfill_stats = {
@@ -116,6 +205,10 @@ class IncrementalSync:
 
             if self.enable_smart_backfill:
                 logger.info("开始智能数据质量检查和补充...")
+
+                # 🎯 开始智能补充阶段监控
+                if self.enable_performance_monitor and self.performance_monitor:
+                    self.performance_monitor.start_phase("smart_backfill")
 
                 # 检查前几只股票来估算整体情况
                 sample_size = min(self.backfill_sample_size, len(symbols))
@@ -185,6 +278,13 @@ class IncrementalSync:
                         f"智能补充完成: 检查了 {backfill_stats['checked_symbols']} 只股票，"
                         f"补充了 {backfill_stats['backfilled_symbols']} 只股票的 {backfill_stats['backfilled_records']} 条记录"
                     )
+
+                    # 🎯 结束智能补充阶段监控
+                    if self.enable_performance_monitor and self.performance_monitor:
+                        self.performance_monitor.end_phase(
+                            "smart_backfill", backfill_stats["backfilled_records"]
+                        )
+
                 else:
                     logger.info("样本检查显示数据质量良好，跳过智能补充阶段")
             else:
@@ -192,12 +292,22 @@ class IncrementalSync:
 
             # 📈 正常增量同步阶段
 
+            # 🎯 开始增量同步阶段监控
+            if self.enable_performance_monitor and self.performance_monitor:
+                self.performance_monitor.start_phase("incremental_sync")
+
             # 按频率同步
             for frequency in frequencies:
                 freq_result = self._sync_frequency_data(
                     symbols, target_date, frequency, progress_bar
                 )
                 self.sync_stats["sync_date_ranges"][frequency] = freq_result
+
+            # 🎯 结束增量同步阶段监控
+            if self.enable_performance_monitor and self.performance_monitor:
+                self.performance_monitor.end_phase(
+                    "incremental_sync", self.sync_stats["success_count"]
+                )
 
             # 更新同步状态
             self._update_sync_status(target_date, self.sync_stats)
@@ -228,6 +338,35 @@ class IncrementalSync:
                     f"智能补充完成: 补充了 {backfill_stats['backfilled_symbols']} 只股票的 "
                     f"{backfill_stats['backfilled_records']} 条历史记录的衍生字段"
                 )
+
+            # 🎯 结束总体监控并生成报告
+            if self.enable_performance_monitor and self.performance_monitor:
+                self.performance_monitor.end_phase(
+                    "total", self.sync_stats["success_count"]
+                )
+
+                # 生成性能报告
+                try:
+                    report = self.performance_monitor.generate_report()
+
+                    # 记录文本格式报告到日志
+                    logger.info("\n" + report.to_text())
+
+                    # 识别瓶颈并记录优化建议
+                    bottlenecks = report.bottlenecks
+                    if bottlenecks:
+                        logger.warning("⚠️  检测到性能瓶颈:")
+                        for bottleneck in bottlenecks:
+                            logger.warning(f"  - {bottleneck}")
+                        logger.info(
+                            "💡 优化建议: 考虑调整相关配置参数以提升瓶颈阶段的性能"
+                        )
+
+                    # 将报告添加到同步统计中
+                    self.sync_stats["performance_report"] = report.to_dict()
+
+                except Exception as report_error:
+                    logger.warning(f"生成性能报告失败: {report_error}")
 
             return self.sync_stats.copy()
 
@@ -408,56 +547,136 @@ class IncrementalSync:
 
             # 批量更新数据库
             updated_count = 0
-            update_sql = """
-            UPDATE market_data 
-            SET prev_close = ?, change_amount = ?, change_percent = ?, amplitude = ?,
-                high_limit = ?, low_limit = ?, is_limit_up = ?, is_limit_down = ?,
-                source = CASE WHEN source LIKE '%enhanced' THEN source ELSE 'smart_backfilled_enhanced' END,
-                quality_score = 100
-            WHERE symbol = ? AND date = ? AND frequency = ?
-            """
 
-            for _, row in df.iterrows():
+            # 尝试使用批量写入优化
+            if self.enable_batch_writer:
                 try:
-                    params = (
-                        (
-                            row["prev_close_new"]
-                            if pd.notna(row["prev_close_new"])
-                            else None
-                        ),
-                        (
-                            row["change_amount_new"]
-                            if pd.notna(row["change_amount_new"])
-                            else 0.0
-                        ),
-                        (
-                            row["change_percent_new"]
-                            if pd.notna(row["change_percent_new"])
-                            else 0.0
-                        ),
-                        row["amplitude_new"] if pd.notna(row["amplitude_new"]) else 0.0,
-                        (
-                            row["high_limit_new"]
-                            if pd.notna(row["high_limit_new"])
-                            else None
-                        ),
-                        (
-                            row["low_limit_new"]
-                            if pd.notna(row["low_limit_new"])
-                            else None
-                        ),
-                        bool(row["is_limit_up_new"]),
-                        bool(row["is_limit_down_new"]),
-                        symbol,
-                        row["date"].strftime("%Y-%m-%d"),
-                        frequency,
+                    logger.debug(
+                        f"使用 BatchWriter 批量更新 {symbol} 的 {len(df)} 条记录"
                     )
 
-                    self.db_manager.execute(update_sql, params)
-                    updated_count += 1
+                    # 初始化 BatchWriter
+                    batch_writer = BatchWriter(
+                        self.db_manager,
+                        batch_size=self.batch_write_size,
+                        auto_flush=False,  # 手动控制刷新
+                    )
 
-                except Exception as e:
-                    logger.warning(f"更新记录失败 {symbol} {row['date']}: {e}")
+                    # 准备批量更新的 SQL
+                    # 注意: SQLite 不支持 UPDATE 的 executemany，需要使用 INSERT OR REPLACE
+                    # 首先获取完整记录，然后用 INSERT OR REPLACE 更新
+                    for _, row in df.iterrows():
+                        try:
+                            # 构建更新记录（只包含需要更新的字段）
+                            update_record = {
+                                "symbol": symbol,
+                                "date": row["date"].strftime("%Y-%m-%d"),
+                                "frequency": frequency,
+                                "prev_close": (
+                                    row["prev_close_new"]
+                                    if pd.notna(row["prev_close_new"])
+                                    else None
+                                ),
+                                "change_amount": (
+                                    row["change_amount_new"]
+                                    if pd.notna(row["change_amount_new"])
+                                    else 0.0
+                                ),
+                                "change_percent": (
+                                    row["change_percent_new"]
+                                    if pd.notna(row["change_percent_new"])
+                                    else 0.0
+                                ),
+                                "amplitude": (
+                                    row["amplitude_new"]
+                                    if pd.notna(row["amplitude_new"])
+                                    else 0.0
+                                ),
+                                "high_limit": (
+                                    row["high_limit_new"]
+                                    if pd.notna(row["high_limit_new"])
+                                    else None
+                                ),
+                                "low_limit": (
+                                    row["low_limit_new"]
+                                    if pd.notna(row["low_limit_new"])
+                                    else None
+                                ),
+                                "is_limit_up": bool(row["is_limit_up_new"]),
+                                "is_limit_down": bool(row["is_limit_down_new"]),
+                            }
+
+                            # 使用专用的 UPDATE SQL 执行批量更新
+                            batch_writer.add_record(
+                                "_update_market_data", update_record
+                            )
+
+                        except Exception as e:
+                            logger.warning(
+                                f"准备批量更新记录失败 {symbol} {row['date']}: {e}"
+                            )
+
+                    # 手动刷新：使用自定义 UPDATE SQL
+                    if batch_writer.get_buffer_size("_update_market_data") > 0:
+                        update_sql = """
+                        UPDATE market_data
+                        SET prev_close = ?, change_amount = ?, change_percent = ?, amplitude = ?,
+                            high_limit = ?, low_limit = ?, is_limit_up = ?, is_limit_down = ?,
+                            source = CASE WHEN source LIKE '%enhanced' THEN source ELSE 'smart_backfilled_enhanced' END,
+                            quality_score = 100
+                        WHERE symbol = ? AND date = ? AND frequency = ?
+                        """
+
+                        records = batch_writer._buffer["_update_market_data"]
+                        params_list = [
+                            (
+                                rec["prev_close"],
+                                rec["change_amount"],
+                                rec["change_percent"],
+                                rec["amplitude"],
+                                rec["high_limit"],
+                                rec["low_limit"],
+                                rec["is_limit_up"],
+                                rec["is_limit_down"],
+                                rec["symbol"],
+                                rec["date"],
+                                rec["frequency"],
+                            )
+                            for rec in records
+                        ]
+
+                        # 使用 execute_batch 执行批量 UPDATE
+                        updated_count = batch_writer.execute_batch(
+                            update_sql, params_list, use_transaction=True
+                        )
+
+                        logger.info(
+                            f"BatchWriter 批量更新完成 {symbol}: {updated_count} 条记录"
+                        )
+
+                        # 获取批量写入统计
+                        batch_stats = batch_writer.get_stats()
+                        logger.debug(
+                            f"批量写入统计: 总记录={batch_stats['total_records']}, "
+                            f"批次数={batch_stats['total_batches']}, "
+                            f"平均批次大小={batch_stats['avg_batch_size']:.1f}, "
+                            f"平均刷新时间={batch_stats['avg_flush_time']:.2f}ms"
+                        )
+
+                except Exception as batch_error:
+                    logger.warning(
+                        f"BatchWriter 批量更新失败 {symbol}: {batch_error}, 降级到逐条更新"
+                    )
+                    # 降级到逐条更新
+                    self._fallback_update_records(df, symbol, frequency, updated_count)
+                    updated_count = self._count_updated_records(df, symbol, frequency)
+
+            else:
+                # 批量写入未启用，使用逐条更新
+                logger.debug(f"BatchWriter 未启用，使用逐条更新 {symbol}")
+                updated_count = self._fallback_update_records(
+                    df, symbol, frequency, updated_count
+                )
 
             logger.info(f"智能补充完成 {symbol}: 更新 {updated_count} 条记录")
 
@@ -477,6 +696,90 @@ class IncrementalSync:
                 "updated_count": 0,
                 "error": str(e),
             }
+
+    def _fallback_update_records(
+        self, df, symbol: str, frequency: str, initial_count: int = 0
+    ) -> int:
+        """
+        降级逐条更新记录
+
+        Args:
+            df: DataFrame 包含更新数据
+            symbol: 股票代码
+            frequency: 频率
+            initial_count: 初始计数
+
+        Returns:
+            int: 更新的记录数
+        """
+        updated_count = initial_count
+        update_sql = """
+        UPDATE market_data
+        SET prev_close = ?, change_amount = ?, change_percent = ?, amplitude = ?,
+            high_limit = ?, low_limit = ?, is_limit_up = ?, is_limit_down = ?,
+            source = CASE WHEN source LIKE '%enhanced' THEN source ELSE 'smart_backfilled_enhanced' END,
+            quality_score = 100
+        WHERE symbol = ? AND date = ? AND frequency = ?
+        """
+
+        import pandas as pd
+
+        for _, row in df.iterrows():
+            try:
+                params = (
+                    row["prev_close_new"] if pd.notna(row["prev_close_new"]) else None,
+                    (
+                        row["change_amount_new"]
+                        if pd.notna(row["change_amount_new"])
+                        else 0.0
+                    ),
+                    (
+                        row["change_percent_new"]
+                        if pd.notna(row["change_percent_new"])
+                        else 0.0
+                    ),
+                    row["amplitude_new"] if pd.notna(row["amplitude_new"]) else 0.0,
+                    row["high_limit_new"] if pd.notna(row["high_limit_new"]) else None,
+                    row["low_limit_new"] if pd.notna(row["low_limit_new"]) else None,
+                    bool(row["is_limit_up_new"]),
+                    bool(row["is_limit_down_new"]),
+                    symbol,
+                    row["date"].strftime("%Y-%m-%d"),
+                    frequency,
+                )
+
+                self.db_manager.execute(update_sql, params)
+                updated_count += 1
+
+            except Exception as e:
+                logger.warning(f"更新记录失败 {symbol} {row['date']}: {e}")
+
+        return updated_count
+
+    def _count_updated_records(self, df, symbol: str, frequency: str) -> int:
+        """
+        统计实际更新的记录数
+
+        Args:
+            df: DataFrame
+            symbol: 股票代码
+            frequency: 频率
+
+        Returns:
+            int: 更新的记录数
+        """
+        try:
+            # 查询更新后的记录数（source包含'enhanced'）
+            sql = """
+            SELECT COUNT(*) as count
+            FROM market_data
+            WHERE symbol = ? AND frequency = ?
+              AND source LIKE '%enhanced'
+            """
+            result = self.db_manager.fetchone(sql, (symbol, frequency))
+            return result["count"] if result else len(df)
+        except Exception:
+            return len(df)
 
     def sync_symbol_range(
         self, symbol: str, start_date: date, end_date: date, frequency: str = "1d"
@@ -536,6 +839,14 @@ class IncrementalSync:
                 f"错误={result['error_count']}"
             )
 
+            # 更新缓存：如果同步成功，更新最后数据日期缓存
+            if result["success_count"] > 0 and self.enable_cache and self.cache_manager:
+                try:
+                    self.cache_manager.set_last_data_date(symbol, frequency, end_date)
+                    logger.debug(f"已更新缓存: {symbol} 最后数据日期={end_date}")
+                except Exception as cache_error:
+                    logger.warning(f"更新缓存失败: {cache_error}")
+
             return result
 
         except Exception as e:
@@ -554,6 +865,18 @@ class IncrementalSync:
             Optional[date]: 最后数据日期，如果没有数据则返回None
         """
         try:
+            # 优先使用缓存
+            if self.enable_cache and self.cache_manager:
+                cached_date = self.cache_manager.get_last_data_date(symbol, frequency)
+
+                # 处理 unified_error_handler 包装的返回值
+                if isinstance(cached_date, dict) and "data" in cached_date:
+                    cached_date = cached_date["data"]
+
+                if cached_date is not None:
+                    return cached_date
+
+            # 缓存未命中，查询数据库
             sql = """
             SELECT MAX(date) as last_date
             FROM market_data
@@ -563,7 +886,13 @@ class IncrementalSync:
             result = self.db_manager.fetchone(sql, (symbol, frequency))
 
             if result and result["last_date"]:
-                return datetime.strptime(result["last_date"], "%Y-%m-%d").date()
+                last_date = datetime.strptime(result["last_date"], "%Y-%m-%d").date()
+
+                # 更新缓存
+                if self.enable_cache and self.cache_manager:
+                    self.cache_manager.set_last_data_date(symbol, frequency, last_date)
+
+                return last_date
             else:
                 return None
 
@@ -814,6 +1143,20 @@ class IncrementalSync:
     def _is_trading_day(self, target_date: date) -> bool:
         """检查是否为交易日"""
         try:
+            # 优先使用缓存
+            if self.enable_cache and self.cache_manager:
+                cached_result = self.cache_manager.is_trading_day(
+                    target_date, market="CN"
+                )
+
+                # 处理 unified_error_handler 包装的返回值
+                if isinstance(cached_result, dict) and "data" in cached_result:
+                    cached_result = cached_result["data"]
+
+                if cached_result is not None:
+                    return cached_result
+
+            # 缓存未命中，查询数据库
             sql = """
             SELECT is_trading FROM trading_calendar
             WHERE date = ? AND market = 'CN'

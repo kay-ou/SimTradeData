@@ -2,6 +2,7 @@
 缓存管理器
 
 提供多级缓存、缓存策略和缓存性能优化功能。
+包含交易日历缓存和股票元数据缓存。
 """
 
 # 标准库导入
@@ -11,6 +12,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 # 项目内导入
@@ -215,7 +217,20 @@ class CacheManager(BaseManager):
             "realtime_data": {"ttl": 60, "level": "l1"},  # 1分钟
             "fundamentals": {"ttl": 21600, "level": "l2"},  # 6小时
             "technical_indicators": {"ttl": 1800, "level": "l1"},  # 30分钟
+            "trading_calendar": {"ttl": 604800, "level": "l2"},  # 7天
+            "last_data_date": {"ttl": 60, "level": "l1"},  # 60秒
+            "stock_metadata": {"ttl": 86400, "level": "l2"},  # 1天
         }
+
+        # 交易日历专用缓存（使用字典以支持快速查找）
+        self._trading_calendar_cache = {}
+        self._trading_calendar_loaded_at = None
+        self._trading_calendar_lock = threading.RLock()
+
+        # 股票元数据专用缓存
+        self._last_data_date_cache = {}  # {(symbol, frequency): (date, timestamp)}
+        self._stock_metadata_cache = {}  # {symbol: (metadata, timestamp)}
+        self._metadata_lock = threading.RLock()
 
         # 启动清理线程
         self.cleanup_thread = threading.Thread(target=self._cleanup_worker, daemon=True)
@@ -544,3 +559,312 @@ class CacheManager(BaseManager):
     def get_cache_strategies(self) -> Dict[str, Dict[str, Any]]:
         """获取缓存策略"""
         return self.cache_strategies.copy()
+
+    # ================== Task 3.1: 交易日历缓存 ==================
+
+    @unified_error_handler(return_dict=True)
+    def load_trading_calendar(
+        self, db_manager, start_date: date, end_date: date, market: str = "CN"
+    ) -> int:
+        """
+        批量加载交易日历到缓存
+
+        Args:
+            db_manager: 数据库管理器
+            start_date: 开始日期
+            end_date: 结束日期
+            market: 市场代码（默认CN）
+
+        Returns:
+            int: 加载的日期数量
+        """
+        with self._trading_calendar_lock:
+            try:
+                # 查询交易日历
+                sql = """
+                SELECT date, is_trading
+                FROM trading_calendar
+                WHERE market = ? AND date BETWEEN ? AND ?
+                ORDER BY date
+                """
+
+                params = (market, str(start_date), str(end_date))
+                results = db_manager.fetchall(sql, params)
+
+                # 加载到缓存
+                loaded_count = 0
+                for row in results:
+                    calendar_date = row["date"]
+                    is_trading = bool(row["is_trading"])
+
+                    # 缓存键: market:YYYY-MM-DD
+                    cache_key = f"{market}:{calendar_date}"
+                    self._trading_calendar_cache[cache_key] = is_trading
+                    loaded_count += 1
+
+                # 更新加载时间
+                self._trading_calendar_loaded_at = time.time()
+
+                self.logger.info(
+                    f"加载交易日历缓存: {start_date} 到 {end_date}, 共 {loaded_count} 天"
+                )
+                return loaded_count
+
+            except Exception as e:
+                self.logger.error(f"加载交易日历缓存失败: {e}")
+                raise
+
+    @unified_error_handler(return_dict=True)
+    def is_trading_day(self, trade_date: date, market: str = "CN") -> Optional[bool]:
+        """
+        查询是否为交易日（优先使用缓存）
+
+        Args:
+            trade_date: 交易日期
+            market: 市场代码
+
+        Returns:
+            Optional[bool]: True=交易日, False=非交易日, None=未找到
+        """
+        with self._trading_calendar_lock:
+            # 检查 TTL 是否过期（7天）
+            if self._trading_calendar_loaded_at is not None:
+                age = time.time() - self._trading_calendar_loaded_at
+                if age > 604800:  # 7天 = 604800秒
+                    self.logger.debug("交易日历缓存已过期,需要重新加载")
+                    self._trading_calendar_cache.clear()
+                    self._trading_calendar_loaded_at = None
+
+            # 缓存键
+            cache_key = f"{market}:{trade_date}"
+
+            # 查询缓存
+            if cache_key in self._trading_calendar_cache:
+                self.stats["l1_hits"] += 1
+                return self._trading_calendar_cache[cache_key]
+
+            self.stats["l1_misses"] += 1
+            return None
+
+    @unified_error_handler(return_dict=True)
+    def clear_trading_calendar_cache(self):
+        """清空交易日历缓存"""
+        with self._trading_calendar_lock:
+            count = len(self._trading_calendar_cache)
+            self._trading_calendar_cache.clear()
+            self._trading_calendar_loaded_at = None
+            self.logger.info(f"清空交易日历缓存: {count} 条记录")
+            return count
+
+    # ================== Task 3.2: 股票元数据缓存 ==================
+
+    @unified_error_handler(return_dict=True)
+    def get_last_data_date(self, symbol: str, frequency: str = "1d") -> Optional[date]:
+        """
+        查询股票最后数据日期（优先使用缓存）
+
+        Args:
+            symbol: 股票代码
+            frequency: 频率
+
+        Returns:
+            Optional[date]: 最后数据日期，未找到返回None
+        """
+        with self._metadata_lock:
+            cache_key = (symbol, frequency)
+
+            # 检查缓存
+            if cache_key in self._last_data_date_cache:
+                cached_date, cached_at = self._last_data_date_cache[cache_key]
+
+                # 检查 TTL（60秒）
+                age = time.time() - cached_at
+                if age < 60:
+                    self.stats["l1_hits"] += 1
+                    return cached_date
+                else:
+                    # 过期，删除缓存
+                    del self._last_data_date_cache[cache_key]
+
+            self.stats["l1_misses"] += 1
+            return None
+
+    @unified_error_handler(return_dict=True)
+    def set_last_data_date(self, symbol: str, frequency: str, last_date: date) -> bool:
+        """
+        更新股票最后数据日期缓存
+
+        Args:
+            symbol: 股票代码
+            frequency: 频率
+            last_date: 最后数据日期
+
+        Returns:
+            bool: 是否成功
+        """
+        with self._metadata_lock:
+            cache_key = (symbol, frequency)
+            self._last_data_date_cache[cache_key] = (last_date, time.time())
+            self.stats["sets"] += 1
+            self.logger.debug(
+                f"更新最后数据日期缓存: {symbol} {frequency} -> {last_date}"
+            )
+            return True
+
+    @unified_error_handler(return_dict=True)
+    def get_stock_metadata(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        查询股票元数据（优先使用缓存）
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            Optional[Dict]: 股票元数据，未找到返回None
+        """
+        with self._metadata_lock:
+            # 检查缓存
+            if symbol in self._stock_metadata_cache:
+                metadata, cached_at = self._stock_metadata_cache[symbol]
+
+                # 检查 TTL（1天 = 86400秒）
+                age = time.time() - cached_at
+                if age < 86400:
+                    self.stats["l1_hits"] += 1
+                    return metadata
+                else:
+                    # 过期，删除缓存
+                    del self._stock_metadata_cache[symbol]
+
+            self.stats["l1_misses"] += 1
+            return None
+
+    @unified_error_handler(return_dict=True)
+    def set_stock_metadata(self, symbol: str, metadata: Dict[str, Any]) -> bool:
+        """
+        设置股票元数据缓存
+
+        Args:
+            symbol: 股票代码
+            metadata: 元数据
+
+        Returns:
+            bool: 是否成功
+        """
+        with self._metadata_lock:
+            self._stock_metadata_cache[symbol] = (metadata, time.time())
+            self.stats["sets"] += 1
+            self.logger.debug(f"设置股票元数据缓存: {symbol}")
+            return True
+
+    @unified_error_handler(return_dict=True)
+    def load_stock_metadata_batch(self, db_manager, symbols: List[str]) -> int:
+        """
+        批量预加载股票元数据
+
+        Args:
+            db_manager: 数据库管理器
+            symbols: 股票代码列表
+
+        Returns:
+            int: 加载的数量
+        """
+        with self._metadata_lock:
+            try:
+                # 查询股票基本信息
+                placeholders = ",".join(["?" for _ in symbols])
+                sql = f"""
+                SELECT symbol, name, industry, list_date, status
+                FROM stocks
+                WHERE symbol IN ({placeholders})
+                """
+
+                results = db_manager.fetchall(sql, tuple(symbols))
+
+                # 加载到缓存
+                loaded_count = 0
+                current_time = time.time()
+                for row in results:
+                    # sqlite3.Row 使用索引访问
+                    metadata = {
+                        "symbol": row["symbol"],
+                        "name": row["name"] if "name" in row.keys() else None,
+                        "industry": (
+                            row["industry"] if "industry" in row.keys() else None
+                        ),
+                        "list_date": (
+                            row["list_date"] if "list_date" in row.keys() else None
+                        ),
+                        "status": row["status"] if "status" in row.keys() else None,
+                    }
+                    self._stock_metadata_cache[row["symbol"]] = (
+                        metadata,
+                        current_time,
+                    )
+                    loaded_count += 1
+
+                self.logger.info(f"批量加载股票元数据: {loaded_count} 只股票")
+                return loaded_count
+
+            except Exception as e:
+                self.logger.error(f"批量加载股票元数据失败: {e}")
+                raise
+
+    @unified_error_handler(return_dict=True)
+    def clear_metadata_cache(self):
+        """清空元数据缓存"""
+        with self._metadata_lock:
+            last_date_count = len(self._last_data_date_cache)
+            metadata_count = len(self._stock_metadata_cache)
+
+            self._last_data_date_cache.clear()
+            self._stock_metadata_cache.clear()
+
+            self.logger.info(
+                f"清空元数据缓存: {last_date_count} 个最后日期, {metadata_count} 个股票元数据"
+            )
+            return last_date_count + metadata_count
+
+    @unified_error_handler(return_dict=True)
+    def get_enhanced_cache_stats(self) -> Dict[str, Any]:
+        """
+        获取增强的缓存统计信息（包括交易日历和元数据）
+
+        Returns:
+            Dict: 缓存统计信息
+        """
+        base_stats = self.get_cache_stats()
+
+        # 添加专用缓存统计
+        with self._trading_calendar_lock:
+            calendar_stats = {
+                "size": len(self._trading_calendar_cache),
+                "loaded_at": (
+                    datetime.fromtimestamp(self._trading_calendar_loaded_at).isoformat()
+                    if self._trading_calendar_loaded_at
+                    else None
+                ),
+                "ttl_seconds": 604800,
+                "is_expired": (
+                    (time.time() - self._trading_calendar_loaded_at > 604800)
+                    if self._trading_calendar_loaded_at
+                    else True
+                ),
+            }
+
+        with self._metadata_lock:
+            metadata_stats = {
+                "last_data_date_cache_size": len(self._last_data_date_cache),
+                "stock_metadata_cache_size": len(self._stock_metadata_cache),
+            }
+
+        # 合并统计信息
+        if isinstance(base_stats, dict) and "data" in base_stats:
+            enhanced_stats = base_stats["data"].copy()
+        else:
+            enhanced_stats = base_stats.copy()
+
+        enhanced_stats["trading_calendar_cache"] = calendar_stats
+        enhanced_stats["metadata_cache"] = metadata_stats
+
+        return enhanced_stats

@@ -51,7 +51,12 @@ class SyncProgressBar:
 
     @contextmanager
     def phase_progress(
-        self, phase_name: str, total: int, desc: str = None, unit: str = "item"
+        self,
+        phase_name: str,
+        total: int,
+        desc: Optional[str] = None,
+        unit: str = "item",
+        phase_info: str = "",
     ) -> Iterator[Optional["SimpleProgress"]]:
         """
         创建阶段进度条
@@ -61,6 +66,7 @@ class SyncProgressBar:
             total: 总数量
             desc: 描述
             unit: 单位
+            phase_info: 阶段信息（如 "阶段1/4"）
 
         Yields:
             SimpleProgress进度条对象
@@ -70,8 +76,8 @@ class SyncProgressBar:
 
         self.current_phase = phase_name
 
-        # 创建简单的进度显示器
-        progress = SimpleProgress(total, desc)
+        # 创建简单的进度显示器（传入阶段信息）
+        progress = SimpleProgress(total, desc, phase_info)
         # 立即设置进度管理器引用
         progress.progress_manager = self
         self.phase_progress_bars[phase_name] = progress
@@ -103,13 +109,15 @@ class SyncProgressBar:
             if hasattr(pbar, "set_description"):
                 pbar.set_description(f"🔄 {desc}")
 
-    def log_phase_start(self, phase_name: str, desc: str = None):
+    def log_phase_start(self, phase_name: str, desc: Optional[str] = None):
         """记录阶段开始"""
         self._clear_progress_line()
         if not self.disable_logs:
             logger.info(f"🚀 {phase_name}: {desc or '开始'}")
 
-    def log_phase_complete(self, phase_name: str, stats: Dict[str, Any] = None):
+    def log_phase_complete(
+        self, phase_name: str, stats: Optional[Dict[str, Any]] = None
+    ):
         """记录阶段完成"""
         self._clear_progress_line()
         if stats:
@@ -138,9 +146,10 @@ class SyncProgressBar:
 class SimpleProgress:
     """进度显示器"""
 
-    def __init__(self, total: int, desc: str = "Processing"):
+    def __init__(self, total: int, desc: str = "Processing", phase_info: str = ""):
         self.total = total
         self.desc = desc
+        self.phase_info = phase_info  # 新增：阶段信息
         self.current = 0
         self._last_reported = -1
         self.start_time = datetime.now()
@@ -187,11 +196,12 @@ class SimpleProgress:
             filled_length = int(bar_length * percentage / 100)
             bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-            # 确保在新行上输出进度
-            progress_line = f"{self.desc}: [{bar}] {percentage:5.1f}% ({self.current}/{self.total}) 剩余:{remaining_str}"
+            # 构建进度信息（包含阶段信息）
+            phase_prefix = f"{self.phase_info} " if self.phase_info else ""
+            progress_line = f"{phase_prefix}{self.desc}: [{bar}] {percentage:5.1f}% ({self.current}/{self.total}) 剩余:{remaining_str}"
 
             # 清除之前的进度行并输出新的进度
-            print(f"\r{progress_line:<100}", end="", flush=True)
+            print(f"\r{progress_line:<120}", end="", flush=True)
 
             # 标记进度行处于活跃状态
             if self.progress_manager:
@@ -207,10 +217,11 @@ class SimpleProgress:
         """关闭进度条"""
         elapsed = datetime.now() - self.start_time
         # 清除当前进度行
-        print(f"\r{' ' * 100}\r", end="", flush=True)
-        # 输出完成信息到新行
+        print(f"\r{' ' * 120}\r", end="", flush=True)
+        # 输出完成信息到新行（包含阶段信息）
+        phase_prefix = f"{self.phase_info} " if self.phase_info else ""
         print(
-            f"✅ {self.desc}: 完成 {self.current}/{self.total} [耗时: {elapsed.total_seconds():.1f}s]"
+            f"✅ {phase_prefix}{self.desc}: 完成 {self.current}/{self.total} [耗时: {elapsed.total_seconds():.1f}s]"
         )
 
         # 重置进度行状态
@@ -224,19 +235,25 @@ sync_progress = SyncProgressBar()
 
 @contextmanager
 def create_phase_progress(
-    phase_name: str, total: int, desc: str = None, unit: str = "item"
+    phase_name: str,
+    total: int,
+    desc: Optional[str] = None,
+    unit: str = "item",
+    phase_info: str = "",
 ):
     """创建阶段进度条的便捷函数"""
-    with sync_progress.phase_progress(phase_name, total, desc, unit) as pbar:
+    with sync_progress.phase_progress(
+        phase_name, total, desc, unit, phase_info
+    ) as pbar:
         yield pbar
 
 
-def log_phase_start(phase_name: str, desc: str = None):
+def log_phase_start(phase_name: str, desc: Optional[str] = None):
     """记录阶段开始"""
     sync_progress.log_phase_start(phase_name, desc)
 
 
-def log_phase_complete(phase_name: str, stats: Dict[str, Any] = None):
+def log_phase_complete(phase_name: str, stats: Optional[Dict[str, Any]] = None):
     """记录阶段完成"""
     sync_progress.log_phase_complete(phase_name, stats)
 

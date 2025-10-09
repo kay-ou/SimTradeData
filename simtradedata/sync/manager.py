@@ -337,6 +337,7 @@ class SyncManager(BaseManager):
                         len(extended_symbols_to_process),
                         "扩展数据同步",
                         "股票",
+                        phase_info="[断点续传]",
                     ) as pbar:
                         try:
                             extended_result = self._sync_extended_data(
@@ -410,7 +411,9 @@ class SyncManager(BaseManager):
             log_phase_start("阶段0", "更新基础数据")
             phase0_start = datetime.now()
 
-            with create_phase_progress("phase0", 2, "基础数据更新", "项") as pbar:
+            with create_phase_progress(
+                "phase0", 2, "基础数据更新", "项", phase_info="[阶段0/4]"
+            ) as pbar:
                 try:
                     # 更新交易日历
                     update_phase_description("更新交易日历")
@@ -506,7 +509,7 @@ class SyncManager(BaseManager):
             phase1_start = datetime.now()
 
             with create_phase_progress(
-                "phase1", len(symbols), "增量同步", "股票"
+                "phase1", len(symbols), "增量同步", "股票", phase_info="[阶段1/4]"
             ) as pbar:
                 try:
                     # 修改增量同步以支持进度回调
@@ -577,7 +580,11 @@ class SyncManager(BaseManager):
 
                 # 使用所有需要处理的股票数量作为进度条基准
                 with create_phase_progress(
-                    "phase2", len(actual_symbols_to_process), "扩展数据同步", "股票"
+                    "phase2",
+                    len(actual_symbols_to_process),
+                    "扩展数据同步",
+                    "股票",
+                    phase_info="[阶段2/4]",
                 ) as pbar:
                     try:
                         extended_result = self._sync_extended_data(
@@ -626,7 +633,7 @@ class SyncManager(BaseManager):
             phase3_start = datetime.now()
 
             with create_phase_progress(
-                "phase3", len(symbols), "缺口检测", "股票"
+                "phase3", len(symbols), "缺口检测", "股票", phase_info="[阶段3/4]"
             ) as pbar:
                 try:
                     update_phase_description(f"检测 {len(symbols)} 只股票的缺口")
@@ -689,7 +696,7 @@ class SyncManager(BaseManager):
                 phase4_start = datetime.now()
 
                 with create_phase_progress(
-                    "phase4", len(symbols), "数据验证", "股票"
+                    "phase4", len(symbols), "数据验证", "股票", phase_info="[阶段4/4]"
                 ) as pbar:
                     try:
                         update_phase_description(

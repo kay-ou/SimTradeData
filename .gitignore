@@ -211,3 +211,5 @@ __marimo__/
 data/
 *.json
 CLAUDE*.md
+.claude/*
+.spec-workflow/*

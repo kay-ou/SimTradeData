@@ -88,16 +88,16 @@ poetry run pytest -m performance  # 性能测试
 
 | 文档 | 描述 | 适用人群 | 状态 |
 |------|------|----------|------|
-| [Architecture_Guide.md](docs/Architecture_Guide.md) | 完整架构设计指南 | 架构师、开发者 | ✅ 最新 |
-| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 开发者指南 | 开发者 | ✅ 最新 |
-| [API_REFERENCE.md](docs/API_REFERENCE.md) | API接口参考 | 开发者 | ✅ 最新 |
-| [CLI_USAGE_GUIDE.md](docs/CLI_USAGE_GUIDE.md) | 命令行使用指南 | 运维人员 | ✅ 最新 |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | 生产部署指南 | 运维人员 | ✅ 最新 |
+| [Architecture_Guide_CN.md](docs/Architecture_Guide_CN.md) | 完整架构设计指南 | 架构师、开发者 | ✅ 最新 |
+| [DEVELOPER_GUIDE_CN.md](docs/DEVELOPER_GUIDE_CN.md) | 开发者指南 | 开发者 | ✅ 最新 |
+| [API_REFERENCE_CN.md](docs/API_REFERENCE_CN.md) | API接口参考 | 开发者 | ✅ 最新 |
+| [CLI_USAGE_GUIDE_CN.md](docs/CLI_USAGE_GUIDE_CN.md) | 命令行使用指南 | 运维人员 | ✅ 最新 |
+| [DEPLOYMENT_CN.md](docs/DEPLOYMENT_CN.md) | 生产部署指南 | 运维人员 | ✅ 最新 |
 
 ### 📋 技术文档
 | 文档 | 描述 | 状态 |
 |------|------|------|
-| [Architecture_Guide.md](docs/Architecture_Guide.md) | 架构设计与实现细节 | ✅ 完整 |
+| [Architecture_Guide_CN.md](docs/Architecture_Guide_CN.md) | 架构设计与实现细节 | ✅ 完整 |
 
 ### 📖 数据源参考文档
 | 文档 | 描述 | 状态 |
@@ -206,7 +206,7 @@ SimTradeData 采用精心设计的 11 表架构，支持多市场、多频率数
 | `industry_classification` | 行业分类 | 多级行业分类标准 |
 | `data_source_quality` | 数据质量监控 | 数据源质量评分、可靠性追踪 |
 
-完整架构设计请参考 [Architecture_Guide.md](docs/Architecture_Guide.md)
+完整架构设计请参考 [Architecture_Guide_CN.md](docs/Architecture_Guide_CN.md)
 
 ## 📊 技术对比
 
@@ -255,4 +255,4 @@ SimTradeData 采用精心设计的 11 表架构，支持多市场、多频率数
 - [SimTradeLab](https://github.com/ykayz/SimTradeLab) - 量化策略回测框架
 - [SimTradeML](https://github.com/ykayz/SimTradeML) - 机器学习模型训练平台
 
-**详细文档**: [Architecture_Guide.md](docs/Architecture_Guide.md) | [DEPLOYMENT.md](docs/DEPLOYMENT.md)
+**详细文档**: [Architecture_Guide_CN.md](docs/Architecture_Guide_CN.md) | [DEPLOYMENT_CN.md](docs/DEPLOYMENT_CN.md)

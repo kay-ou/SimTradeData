@@ -1,54 +1,54 @@
 # SimTradeData API Reference
 
-**[English](API_REFERENCE.md)** | **[中文](API_REFERENCE_CN.md)**
+**[中文](API_REFERENCE.md)** | **[English](API_REFERENCE_EN.md)**
 
 ## 📖 Overview
 
-SimTradeData provides multiple API interfaces including PTrade-compatible interface, REST API, and Python API. This document details all available API interfaces and usage methods.
+SimTradeData 提供多种API接口，包括PTrade兼容接口、REST API和Python API。本文档详细介绍了所有可用的API接口和使用方法。
 
 ## 🐍 Python API
 
-### Core API Router
+### 核心API路由器
 
 #### APIRouter
 
-High-performance data query router providing unified data access interface with caching, concurrency, and query optimization support.
+高性能的数据查询路由器，提供统一的数据访问接口，支持缓存、并发和查询优化。
 
 ```python
 from simtradedata.api.router import APIRouter
 from simtradedata.database.manager import DatabaseManager
 from simtradedata.config.manager import Config
 
-# Initialize core components
+# 初始化核心组件
 config = Config()
 db_manager = DatabaseManager("data/simtradedata.db")
 api_router = APIRouter(db_manager, config)
 ```
 
-#### Core Features
+#### 核心特性
 
-- **High-Performance Queries**: Optimized SQL generation and execution
-- **Intelligent Caching**: Multi-level cache strategy for improved query speed
-- **Concurrency Support**: Support for high-concurrency query requests
-- **Formatted Output**: Automatic formatting to DataFrame or JSON
-- **Error Handling**: Comprehensive exception handling and logging
+- **高性能查询**: 优化的SQL生成和执行
+- **智能缓存**: 多级缓存策略，提升查询速度
+- **并发支持**: 支持高并发查询请求
+- **格式化输出**: 自动格式化为DataFrame或JSON
+- **错误处理**: 完善的异常处理和日志记录
 
-### Main API Methods
+### 主要API方法
 
-#### Historical Data Query
+#### 历史数据查询
 
 **get_history(symbols, start_date, end_date, frequency="1d", fields=None)**
-- Get historical market data, support multi-symbol and multi-frequency queries
-- Parameters:
-  - `symbols` (list[str]): Stock code list, e.g., ['000001.SZ', '000002.SZ']
-  - `start_date` (str): Start date, format 'YYYY-MM-DD'
-  - `end_date` (str): End date, format 'YYYY-MM-DD'
-  - `frequency` (str): Data frequency, supports '1d', '5m', '15m', '30m', '60m'
-  - `fields` (list[str], optional): Specify return fields
-- Returns: pandas.DataFrame
+- 获取历史行情数据，支持多股票、多频率查询
+- 参数:
+  - `symbols` (list[str]): 股票代码列表，如 ['000001.SZ', '000002.SZ']
+  - `start_date` (str): 开始日期，格式 'YYYY-MM-DD'
+  - `end_date` (str): 结束日期，格式 'YYYY-MM-DD'
+  - `frequency` (str): 数据频率，支持 '1d', '5m', '15m', '30m', '60m'
+  - `fields` (list[str], optional): 指定返回字段
+- 返回: pandas.DataFrame
 
 ```python
-# Get single stock daily data
+# 获取单只股票日线数据
 data = api_router.get_history(
     symbols=['000001.SZ'],
     start_date='2024-01-01',
@@ -56,7 +56,7 @@ data = api_router.get_history(
     frequency='1d'
 )
 
-# Get multiple stocks minute data
+# 获取多只股票分钟数据
 data = api_router.get_history(
     symbols=['000001.SZ', '000002.SZ'],
     start_date='2024-01-01',
@@ -65,32 +65,32 @@ data = api_router.get_history(
 )
 ```
 
-#### Real-time Data Query
+#### 实时数据查询
 
 **get_snapshot(symbols, fields=None)**
-- Get stock snapshot data
-- Parameters:
-  - `symbols` (list[str]): Stock code list
-  - `fields` (list[str], optional): Specify return fields
-- Returns: pandas.DataFrame
+- 获取股票快照数据
+- 参数:
+  - `symbols` (list[str]): 股票代码列表
+  - `fields` (list[str], optional): 指定返回字段
+- 返回: pandas.DataFrame
 
 ```python
-# Get stock snapshot
+# 获取股票快照
 snapshot = api_router.get_snapshot(['000001.SZ', '000002.SZ'])
 ```
 
-#### Financial Data Query
+#### 财务数据查询
 
 **get_financials(symbols, start_date, end_date)**
-- Get financial data
-- Parameters:
-  - `symbols` (list[str]): Stock code list
-  - `start_date` (str): Start date
-  - `end_date` (str): End date
-- Returns: pandas.DataFrame
+- 获取财务数据
+- 参数:
+  - `symbols` (list[str]): 股票代码列表
+  - `start_date` (str): 开始日期
+  - `end_date` (str): 结束日期
+- 返回: pandas.DataFrame
 
 ```python
-# Get financial data
+# 获取财务数据
 financials = api_router.get_financials(
     symbols=['000001.SZ'],
     start_date='2024-01-01',
@@ -98,135 +98,137 @@ financials = api_router.get_financials(
 )
 ```
 
-### Data Sync API
+### 数据同步API
 
 ```python
 from simtradedata.sync import SyncManager
 
-# Initialize sync manager
+# 初始化同步管理器
 sync_manager = SyncManager(db_manager, data_source_manager)
 
-# Incremental sync
+# 增量同步
 result = sync_manager.incremental_sync(
     symbol='000001.SZ',
     start_date='2024-01-01',
     end_date='2024-01-31'
 )
 
-# Historical backfill
+# 历史回填
 result = sync_manager.historical_backfill(
     symbol='000001.SZ',
     target_date='2024-01-01'
 )
 ```
 
-### Monitoring API
+### 监控API
 
 ```python
 from simtradedata.monitoring import AlertSystem, DataQualityMonitor
 
-# Data quality monitoring
+# 数据质量监控
 quality_monitor = DataQualityMonitor(db_manager)
 quality_score = quality_monitor.evaluate_source_quality('baostock', '000001.SZ', 'ohlcv')
 
-# Alert system
+# 告警系统
 alert_system = AlertSystem(db_manager)
 alerts = alert_system.check_all_rules()
 summary = alert_system.get_alert_summary()
 ```
 
-## 🔌 PTrade Compatible Interface
+## 🔌 PTrade兼容接口
 
-SimTradeData provides PTrade-compatible API interface. For details, see [PTrade API Reference](PTrade_API_mini_Reference.md).
+SimTradeData 提供与PTrade兼容的API接口，详见 [PTrade API参考文档](PTrade_API_mini_Reference.md)。
 
-### Usage Example
+### 使用示例
 
 ```python
 from simtradedata.interfaces import PTradeAPIAdapter
 
 adapter = PTradeAPIAdapter(db_manager, config)
 
-# Get stock list
+# 获取股票列表
 stocks = adapter.get_stock_list('SZ')
 
-# Get price data
+# 获取价格数据
 prices = adapter.get_price('000001.SZ', '2024-01-01', '2024-01-31')
 
-# Get stock info
+# 获取股票信息
 info = adapter.get_stock_info('000001.SZ')
 ```
 
 ## 🌐 REST API
 
-> **Note**: REST API server functionality is optional and requires separate startup. SimTradeData primarily provides Python API.
+> **注**: REST API 服务器功能可选，需要单独启动。SimTradeData 主要提供 Python API。
 
-### Basic Info
+### 基础信息
 
 - **Base URL**: `http://localhost:8080/api/v1`
 - **Content-Type**: `application/json`
 
-### Main Endpoints
+### 主要端点
 
-For detailed REST API documentation, refer to `simtradedata/interfaces/rest_api.py` in the source code.
+详细的 REST API 文档请参考源代码中的 `simtradedata/interfaces/rest_api.py`。
 
-## 📊 Data Source Management API
+## 📊 数据源管理API
 
 ```python
 from simtradedata.data_sources import DataSourceManager
 
-# Initialize data source manager
+# 初始化数据源管理器
 ds_manager = DataSourceManager(config)
 
-# Health check
+# 健康检查
 health = ds_manager.health_check()
 
-# Get available data sources
+# 获取可用数据源
 available = ds_manager.get_available_sources()
 
-# Get system status
+# 获取系统状态
 status = ds_manager.get_status()
 ```
 
-## 📊 Performance API
 
-### Cache Management
+
+## 📊 性能API
+
+### 缓存管理
 
 ```python
 from simtradedata.performance import CacheManager
 
 cache = CacheManager(config)
 
-# Set cache
+# 设置缓存
 cache.set('key', data, ttl=600)
 
-# Get cache
+# 获取缓存
 data = cache.get('key')
 
-# Get cache statistics
+# 获取缓存统计
 stats = cache.get_stats()
-print(f"Hit rate: {stats['hit_rate']}%")
+print(f"命中率: {stats['hit_rate']}%")
 ```
 
-### Technical Indicators Calculation
+### 技术指标计算
 
 ```python
 from simtradedata.preprocessor.indicators import TechnicalIndicators
 
 indicators = TechnicalIndicators()
 
-# Calculate MACD
+# 计算MACD
 macd = indicators.calculate_macd(close_prices)
 
-# Calculate RSI
+# 计算RSI
 rsi = indicators.calculate_rsi(close_prices)
 
-# Get cache statistics
+# 获取缓存统计
 stats = indicators.get_cache_stats()
 ```
 
-## 📈 Monitoring & Health Check
+## 📈 监控与健康检查
 
-### Database Health Check
+### 数据库健康检查
 
 ```python
 from simtradedata.database import DatabaseManager
@@ -235,57 +237,57 @@ from simtradedata.config import Config
 config = Config()
 db = DatabaseManager(config.get('database.path'))
 
-# Check database connection
+# 检查数据库连接
 try:
     result = db.fetchone("SELECT 1")
-    print("✅ Database connection OK")
+    print("✅ 数据库连接正常")
 except Exception as e:
-    print(f"❌ Database connection failed: {e}")
+    print(f"❌ 数据库连接失败: {e}")
 
-# Check table status
+# 检查表状态
 tables = ['stocks', 'market_data', 'trading_calendar']
 for table in tables:
     count = db.fetchone(f"SELECT COUNT(*) as count FROM {table}")
-    print(f"✅ {table}: {count['count']} records")
+    print(f"✅ {table}: {count['count']} 条记录")
 ```
 
-### Data Quality Monitoring
+### 数据质量监控
 
 ```python
 from simtradedata.monitoring import DataQualityMonitor
 
 monitor = DataQualityMonitor(db_manager)
 
-# Evaluate data source quality
+# 评估数据源质量
 quality = monitor.evaluate_source_quality('baostock', '000001.SZ', 'ohlcv')
-print(f"Quality score: {quality['overall_score']}")
+print(f"质量评分: {quality['overall_score']}")
 
-# Get data source ranking
+# 获取数据源排名
 ranking = monitor.get_source_ranking('ohlcv')
 ```
 
-### Alert System
+### 告警系统
 
 ```python
 from simtradedata.monitoring import AlertSystem, AlertRuleFactory, ConsoleNotifier
 
-# Initialize alert system
+# 初始化告警系统
 alert_system = AlertSystem(db_manager)
 alert_system.add_notifier(ConsoleNotifier())
 
-# Add default alert rules
+# 添加默认告警规则
 rules = AlertRuleFactory.create_all_default_rules(db_manager)
 for rule in rules:
     alert_system.add_rule(rule)
 
-# Check alerts
+# 检查告警
 alerts = alert_system.check_all_rules()
 
-# Get alert summary
+# 获取告警摘要
 summary = alert_system.get_alert_summary()
-print(f"Active alerts: {summary['active_alerts_count']}")
+print(f"激活告警: {summary['active_alerts_count']}个")
 ```
 
 ---
 
-*SimTradeData API Reference - Complete API Documentation*
+*SimTradeData API Reference - 完整的API接口文档*

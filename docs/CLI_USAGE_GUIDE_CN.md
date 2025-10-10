@@ -1,125 +1,125 @@
 # SimTradeData CLI Usage Guide
 
-**[English](CLI_USAGE_GUIDE.md)** | **[中文](CLI_USAGE_GUIDE_CN.md)**
+**[中文](CLI_USAGE_GUIDE.md)** | **[English](CLI_USAGE_GUIDE_EN.md)**
 
 SimTradeData provides a powerful command-line interface (CLI) for various data management tasks including database initialization, data synchronization, queries, and system monitoring.
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Environment Setup
+### 环境准备
 
 ```bash
-# Clone the project
+# 克隆项目
 git clone <repository-url>
 cd SimTradeData
 
-# Install dependencies
+# 安装依赖
 poetry install
 
-# Activate virtual environment
+# 激活虚拟环境
 poetry shell
 ```
 
-### Database Initialization
+### 数据库初始化
 
 ```bash
-# Create database and table structure
+# 创建数据库和表结构
 poetry run python scripts/init_database.py --db-path data/simtradedata.db
 
-# Verify database creation
+# 验证数据库创建
 ls -la data/simtradedata.db
 ```
 
-### Verify Installation
+### 验证安装
 
 ```bash
-# Check CLI availability
+# 检查CLI可用性
 poetry run python -m simtradedata --help
 
-# Run basic tests
+# 运行基础测试
 poetry run python -m pytest tests/test_database.py -v
 ```
 
-## 📋 Command Overview
+## 📋 命令概览
 
-### Data Synchronization Commands
+### 数据同步命令
 
 ```bash
-# Full sync - Synchronize all data for a specific date
+# 全量同步 - 同步指定日期的所有数据
 poetry run python -m simtradedata full-sync --target-date 2024-01-24
 
-# Full sync - Synchronize specific stocks
+# 全量同步 - 同步指定股票
 poetry run python -m simtradedata full-sync --symbols 000001.SZ 000002.SZ
 
-# Full sync - Synchronize all stocks
+# 全量同步 - 同步所有股票
 poetry run python -m simtradedata full-sync --all-stocks
 
-# Full sync - Specify multiple frequencies
+# 全量同步 - 指定多个频率
 poetry run python -m simtradedata full-sync --frequencies 1d 1h
 
-# Incremental sync - Specify date range
+# 增量同步 - 指定日期范围
 poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-31
 
-# Incremental sync - Specify stocks and frequency
+# 增量同步 - 指定股票和频率
 poetry run python -m simtradedata incremental --start-date 2024-01-01 --symbols 000001.SZ --frequency 1d
 ```
 
-### Gap Detection and Repair Commands
+### 缺口检测和修复命令
 
 ```bash
-# Gap detection and repair - Specify date range
+# 缺口检测和修复 - 指定日期范围
 poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date 2024-01-31
 
-# Gap repair - Specify stocks
+# 缺口修复 - 指定股票
 poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --symbols 000001.SZ 000002.SZ
 
-# Gap repair - Specify frequency
+# 缺口修复 - 指定频率
 poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --frequencies 1d 1h
 ```
 
-### Resume Commands
+### 断点续传命令
 
 ```bash
-# Resume - Restore synchronization for a specific stock
+# 断点续传 - 恢复指定股票的同步
 poetry run python -m simtradedata resume --symbol 000001.SZ
 
-# Resume - Specify frequency
+# 断点续传 - 指定频率
 poetry run python -m simtradedata resume --symbol 000001.SZ --frequency 1d
 ```
 
-### Status Query Commands
+### 状态查询命令
 
 ```bash
-# View current synchronization status
+# 查看当前同步状态
 poetry run python -m simtradedata status
 ```
 
-## 🔧 Configuration Options
+## 🔧 配置选项
 
-### Command Line Arguments
+### 命令行参数
 
-All commands support the following global arguments:
+所有命令都支持以下全局参数：
 
 ```bash
-# Specify database path
+# 指定数据库路径
 poetry run python -m simtradedata full-sync --db-path /path/to/database.db
 
-# Specify configuration file path
+# 指定配置文件路径
 poetry run python -m simtradedata full-sync --config /path/to/config.yaml
 
-# Enable verbose output
+# 启用详细输出
 poetry run python -m simtradedata full-sync --verbose
 
-# Quiet mode (minimal output)
+# 安静模式（最小化输出）
 poetry run python -m simtradedata full-sync --quiet
 
-# Disable progress bar
+# 禁用进度条
 poetry run python -m simtradedata full-sync --no-progress
 ```
 
-### Configuration File Example
+### 配置文件示例
 
-Create a `config.yaml` configuration file:
+创建 `config.yaml` 配置文件：
 
 ```yaml
 database:
@@ -141,69 +141,69 @@ logging:
   file: "logs/simtradedata.log"
 ```
 
-## 🔍 Practical Usage Examples
+## 🔍 实际用法示例
 
-### Basic Workflow
+### 基本工作流程
 
 ```bash
-# 1. Create database
+# 1. 创建数据库
 poetry run python scripts/init_database.py --db-path data/simtradedata.db
 
-# 2. Full sync today's data
+# 2. 全量同步今日数据
 poetry run python -m simtradedata full-sync
 
-# 3. Sync historical data for specific stocks
+# 3. 同步指定股票的历史数据
 poetry run python -m simtradedata full-sync --symbols 000001.SZ 000002.SZ --target-date 2024-01-01
 
-# 4. Incremental update for the past week
+# 4. 增量更新最近一周数据
 poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-07
 
-# 5. Fix data gaps
+# 5. 修复数据缺口
 poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date 2024-01-31
 
-# 6. View synchronization status
+# 6. 查看同步状态
 poetry run python -m simtradedata status
 ```
 
-### Advanced Use Cases
+### 高级使用场景
 
 ```bash
-# Read stock symbols from file
+# 从文件读取股票代码
 poetry run python -m simtradedata full-sync --symbols-file symbols.txt
 
-# Multi-frequency synchronization
+# 多频率同步
 poetry run python -m simtradedata full-sync --frequencies 1d 1h 5m
 
-# Resume (restore interrupted synchronization)
+# 断点续传（恢复中断的同步）
 poetry run python -m simtradedata resume --symbol 000001.SZ --frequency 1d
 
-# Verbose logging mode
+# 详细日志模式
 poetry run python -m simtradedata full-sync --verbose
 
-# Quiet mode (for scheduled tasks)
+# 静默模式（用于定时任务）
 poetry run python -m simtradedata incremental --start-date 2024-01-01 --quiet
 ```
 
-### Monitoring and Alerts
+### 监控和告警
 
 ```bash
-# Check alert status
+# 检查告警状态
 poetry run python -m simtradedata.monitoring.alert_system check
 
-# Get data quality report
+# 获取数据质量报告
 poetry run python -m simtradedata.monitoring.data_quality report
 
-# View active alerts
+# 查看激活的告警
 poetry run python -c "
 from simtradedata.database import DatabaseManager
 from simtradedata.monitoring import AlertSystem
 db = DatabaseManager('data/simtradedata.db')
 alerts = AlertSystem(db)
 summary = alerts.get_alert_summary()
-print(f'Active alerts: {summary[\"active_alerts_count\"]}')
+print(f'激活告警: {summary[\"active_alerts_count\"]}个')
 "
 
-# Test all alert rules
+# 测试所有告警规则
 poetry run python -c "
 from simtradedata.database import DatabaseManager
 from simtradedata.monitoring import AlertSystem, AlertRuleFactory
@@ -213,93 +213,93 @@ rules = AlertRuleFactory.create_all_default_rules(db)
 for rule in rules:
     alert_system.add_rule(rule)
 triggered = alert_system.check_all_rules()
-print(f'Triggered alerts: {len(triggered)}')
+print(f'触发告警: {len(triggered)}个')
 "
 ```
 
-### Production Environment Commands
+### 生产环境命令
 
 ```bash
-# Start with production configuration
+# 使用生产配置启动
 poetry run python -m simtradedata.cli serve --config production_config.yaml
 
-# Health check
+# 健康检查
 poetry run python -m simtradedata.cli health-check
 
-# Database optimization (production environment)
+# 数据库优化（生产环境）
 poetry run python -c "
 from simtradedata.database import DatabaseManager
 db = DatabaseManager('data/simtradedata.db')
-db.execute('VACUUM;')  # Compress database
-db.execute('ANALYZE;')  # Update statistics
+db.execute('VACUUM;')  # 压缩数据库
+db.execute('ANALYZE;')  # 更新统计信息
 "
 
-# View performance statistics
+# 查看性能统计
 poetry run python -c "
 from simtradedata.preprocessor.indicators import TechnicalIndicators
 ind = TechnicalIndicators()
 stats = ind.get_cache_stats()
-print(f'Cache size: {stats[\"cache_size\"]}/{stats[\"cache_max_size\"]}')
+print(f'缓存大小: {stats[\"cache_size\"]}/{stats[\"cache_max_size\"]}')
 "
 ```
 
-## 🚨 Troubleshooting
+## 🚨 故障排除
 
-### Common Issues and Solutions
+### 常见问题和解决方案
 
 ```bash
-# 1. Check if database is properly initialized
+# 1. 检查数据库是否正确初始化
 ls -la data/simtradedata.db
 
-# 2. Verify configuration file syntax
+# 2. 验证配置文件语法
 python -c "import yaml; yaml.safe_load(open('config.yaml'))"
 
-# 3. Test data source connections
-poetry run python -c "from simtradedata.data_sources import DataSourceManager; dsm = DataSourceManager(); print('Data source initialization successful')"
+# 3. 测试数据源连接
+poetry run python -c "from simtradedata.data_sources import DataSourceManager; dsm = DataSourceManager(); print('数据源初始化成功')"
 
-# 4. Check dependency installation
+# 4. 检查依赖安装
 poetry install --sync
 
-# 5. Run basic tests
+# 5. 运行基础测试
 poetry run python -m pytest tests/ -v -x
 ```
 
-### Log File Locations
+### 日志文件位置
 
-- **Application logs**: `logs/simtradedata.log` (if configured)
-- **Poetry logs**: Standard output when using `poetry run`
-- **System logs**: Use `--verbose` parameter to view detailed information
+- **应用日志**: `logs/simtradedata.log` (如果配置了)
+- **Poetry日志**: 使用 `poetry run` 时的标准输出
+- **系统日志**: 使用 `--verbose` 参数查看详细信息
 
-### Performance Recommendations
+### 性能建议
 
 ```bash
-# 1. For large amounts of data, recommend batch synchronization
+# 1. 对于大量数据，建议分批同步
 poetry run python -m simtradedata full-sync --symbols 000001.SZ --target-date 2024-01-01
 poetry run python -m simtradedata full-sync --symbols 000002.SZ --target-date 2024-01-01
 
-# 2. Use incremental sync to reduce data volume
+# 2. 使用增量同步减少数据量
 poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-07
 
-# 3. Run gap repair regularly
+# 3. 定期运行缺口修复
 poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date $(date +%Y-%m-%d)
 ```
 
-## 📚 More Information
+## 📚 更多信息
 
-- [Production Deployment Guide](PRODUCTION_DEPLOYMENT_GUIDE.md) - Complete production environment configuration and deployment guide
-- [API Reference](API_REFERENCE.md) - Detailed API interface documentation
-- [Developer Guide](DEVELOPER_GUIDE.md) - Developer extension development guide
-- [Architecture Guide](Architecture_Guide.md) - System architecture and design documentation
+- [生产部署指南](PRODUCTION_DEPLOYMENT_GUIDE.md) - 完整的生产环境配置和部署指南
+- [API 参考文档](API_REFERENCE.md) - API接口详细文档
+- [开发者指南](DEVELOPER_GUIDE.md) - 开发者扩展开发指南
+- [架构指南](Architecture_Guide.md) - 系统架构和设计文档
 
-## 🆘 Getting Help
+## 🆘 获取帮助
 
 ```bash
-# View help information
+# 查看帮助信息
 poetry run python -m simtradedata --help
 
-# View subcommand help
+# 查看子命令帮助
 poetry run python -m simtradedata sync --help
 
-# View version information
+# 查看版本信息
 poetry run python -m simtradedata --version
 ```

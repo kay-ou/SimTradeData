@@ -92,7 +92,7 @@ poetry run pytest -m performance  # 性能测试
 | [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 开发者指南 | 开发者 | ✅ 最新 |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | API接口参考 | 开发者 | ✅ 最新 |
 | [CLI_USAGE_GUIDE.md](docs/CLI_USAGE_GUIDE.md) | 命令行使用指南 | 运维人员 | ✅ 最新 |
-| [PRODUCTION_DEPLOYMENT_GUIDE.md](docs/PRODUCTION_DEPLOYMENT_GUIDE.md) | 生产部署指南 | 运维人员 | ✅ 最新 |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | 生产部署指南 | 运维人员 | ✅ 最新 |
 
 ### 📋 技术文档
 | 文档 | 描述 | 状态 |
@@ -255,4 +255,4 @@ SimTradeData 采用精心设计的 11 表架构，支持多市场、多频率数
 - [SimTradeLab](https://github.com/ykayz/SimTradeLab) - 量化策略回测框架
 - [SimTradeML](https://github.com/ykayz/SimTradeML) - 机器学习模型训练平台
 
-**详细文档**: [Architecture_Guide.md](docs/Architecture_Guide.md) | [PRODUCTION_DEPLOYMENT_GUIDE.md](docs/PRODUCTION_DEPLOYMENT_GUIDE.md)
+**详细文档**: [Architecture_Guide.md](docs/Architecture_Guide.md) | [DEPLOYMENT.md](docs/DEPLOYMENT.md)

@@ -94,7 +94,7 @@ poetry run pytest -m performance   # Performance tests
 | [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Developer guide | Developers | ✅ Latest |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | API reference | Developers | ✅ Latest |
 | [CLI_USAGE_GUIDE.md](docs/CLI_USAGE_GUIDE.md) | CLI usage guide | DevOps | ✅ Latest |
-| [PRODUCTION_DEPLOYMENT_GUIDE.md](docs/PRODUCTION_DEPLOYMENT_GUIDE.md) | Production deployment guide | DevOps | ✅ Latest |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide | DevOps | ✅ Latest |
 
 ### 📋 Technical Documentation
 | Document | Description | Status |
@@ -257,4 +257,4 @@ For complete architecture design, see [Architecture_Guide.md](docs/Architecture_
 - [SimTradeLab](https://github.com/ykayz/SimTradeLab) - Quantitative strategy backtesting framework
 - [SimTradeML](https://github.com/ykayz/SimTradeML) - Machine learning model training platform
 
-**Documentation**: [Architecture_Guide.md](docs/Architecture_Guide.md) | [PRODUCTION_DEPLOYMENT_GUIDE.md](docs/PRODUCTION_DEPLOYMENT_GUIDE.md)
+**Documentation**: [Architecture_Guide.md](docs/Architecture_Guide.md) | [DEPLOYMENT.md](docs/DEPLOYMENT.md)

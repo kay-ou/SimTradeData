@@ -314,6 +314,8 @@ class HDF5Writer:
                         market_data,
                         format="table",
                         data_columns=True,
+                        complevel=9,
+                        complib="blosc",
                     )
 
                 # Write exrights data
@@ -327,6 +329,8 @@ class HDF5Writer:
                         exrights_data,
                         format="table",
                         data_columns=True,
+                        complevel=9,
+                        complib="blosc",
                     )
 
                 # Write metadata
@@ -360,6 +364,8 @@ class HDF5Writer:
                         valuation_data,
                         format="table",
                         data_columns=True,
+                        complevel=9,
+                        complib="blosc",
                     )
 
                 # Write fundamentals data
@@ -375,6 +381,8 @@ class HDF5Writer:
                         fundamentals_data,
                         format="table",
                         data_columns=True,
+                        complevel=9,
+                        complib="blosc",
                     )
 
         # Write to ptrade_adj_pre.h5 (adjust factor)

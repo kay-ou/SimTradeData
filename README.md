@@ -1,32 +1,32 @@
-# SimTradeData - 量化交易数据支持库
+# SimTradeData - 高效量化交易数据下载工具
 
-> 🎯 **为 SimTradeLab 提供兼容的 H5 格式数据** | 📊 **多数据源融合** | 🚀 **开源免费**
+> 🚀 **优化的BaoStock数据下载** | 📊 **PTrade格式兼容** | ⚡ **API调用减少33%**
 
-**SimTradeData** 是 [SimTradeLab](https://github.com/kay_ou/SimTradeLab) 的配套数据库,通过整合 BaoStock、QStock、Yahoo Finance 等开源数据源,生成与 SimTradeLab 兼容的 HDF5 格式数据文件,为量化策略回测提供完整的历史数据支持。
+**SimTradeData** 是为 [SimTradeLab](https://github.com/kay_ou/SimTradeLab) 设计的高效数据下载工具。通过智能的API调用优化，在单次请求中获取多种数据类型，显著提升下载效率。
 
-## 🎯 项目目标
+## ✨ 核心特性
 
-SimTradeLab 原本使用 PTrade(掘金量化)的数据格式,但 PTrade 为商业数据源。本项目旨在:
+### 🎯 性能优化
+- **统一数据获取**: 一次API调用同时获取行情、估值、状态数据
+- **API调用优化**: 相比传统方法减少 **33%** 的API调用次数
+- **增量更新支持**: 智能识别已下载数据，仅更新增量部分
+- **断点续传**: 中断后自动跳过已完成的股票
 
-1. **数据格式兼容**: 生成与 PTrade 数据完全兼容的 HDF5 文件格式
-2. **开源数据整合**: 整合 BaoStock、QStock、Yahoo Finance 等免费开源数据源
-3. **零成本使用**: 让用户无需付费即可使用 SimTradeLab 进行量化回测
-4. **数据完整性**: 尽可能提供完整的行情、财务、估值等多维度数据
+### 📦 数据完整性
+- **市场数据**: OHLCV日线数据
+- **估值指标**: PE/PB/PS/PCF/换手率
+- **复权因子**: 前复权/后复权因子
+- **股票元数据**: 上市日期、退市日期、行业分类
+- **指数成分股**: 上证50、沪深300、中证500等
+- **交易日历**: 完整的A股交易日历
 
-## 📦 数据文件说明
+## 📦 生成的数据文件
 
-本项目生成以下 HDF5 格式数据文件,完全兼容 SimTradeLab:
-
-| 文件名 | 大小 | 说明 | 数据内容 |
-|--------|------|------|----------|
-| `ptrade_data.h5` | ~157 MB | 主数据文件 | 股票行情(OHLCV)、基准指数、除权除息、股票元数据 |
-| `ptrade_fundamentals.h5` | ~192 MB | 基本面数据 | 季度财务指标(23项)、每日估值指标(PE/PB/PS等) |
-| `ptrade_adj_pre.h5` | ~85 MB | 复权因子 | 每只股票的历史复权因子序列 |
-| `ptrade_dividend_cache.h5` | ~0.5 MB | 分红缓存 | 股票分红派息记录 |
-
-### 数据结构详情
-
-详细的数据结构分析请参考: [H5_DATA_STRUCTURE.md](docs/H5_DATA_STRUCTURE.md)
+| 文件名 | 说明 | 数据内容 |
+|--------|------|----------|
+| `ptrade_data.h5` | 主数据文件 | 股票行情(OHLCV)、基准指数、除权除息、股票元数据、交易日历 |
+| `ptrade_fundamentals.h5` | 估值数据 | 每日估值指标(PE/PB/PS/PCF/换手率) |
+| `ptrade_adj_pre.h5` | 复权因子 | 每只股票的历史复权因子序列 |
 
 ## 🚀 快速开始
 
@@ -44,45 +44,17 @@ poetry install
 poetry shell
 ```
 
-### 2. 生成 HDF5 数据文件
+### 2. 下载数据
 
 ```bash
-# 【推荐】下载全部数据(K线使用Mootdx加速,其他用BaoStock)
-poetry run python -m simtradedata.cli fetch-all \
-  --start-date 2024-01-01 \
-  --end-date 2024-12-31 \
-  --market-source mootdx
+# 【首次下载】下载全部数据（2017至今）
+poetry run python scripts/download_efficient.py
 
-# 跳过基本面数据,下载更快(约6小时完成5600股)
-poetry run python -m simtradedata.cli fetch-all \
-  --start-date 2024-01-01 \
-  --skip-fundamentals \
-  --market-source mootdx
+# 【增量更新】更新最近7天数据
+poetry run python scripts/download_efficient.py --incremental 7
 
-# 【第二步】单独补充基本面数据(约15小时)
-poetry run python -m simtradedata.cli fetch-all \
-  --start-date 2024-01-01 \
-  --only-fundamentals
-
-# 下载指定股票
-poetry run python -m simtradedata.cli fetch \
-  "600000.SH,000001.SZ,000002.SZ" \
-  --start-date 2024-01-01 \
-  --market-source mootdx
-
-# 增量更新已有数据(最近30天)
-poetry run python -m simtradedata.cli update --days 30
-
-# 下载基准指数数据
-poetry run python -m simtradedata.cli fetch-benchmark \
-  --index-code 000001.SH \
-  --start-date 2024-01-01
-
-# 验证数据完整性
-poetry run python -m simtradedata.cli validate --output-dir data
-
-# 查看数据统计
-poetry run python -m simtradedata.cli stats --output-dir data
+# 【增量更新】更新最近30天数据
+poetry run python scripts/download_efficient.py --incremental 30
 ```
 
 ### 3. 在 SimTradeLab 中使用
@@ -94,98 +66,122 @@ poetry run python -m simtradedata.cli stats --output-dir data
 cp data/*.h5 /path/to/SimTradeLab/data/
 ```
 
-SimTradeLab 会自动识别并加载这些数据文件。
+## ⚡ 性能优化详解
 
-## 📊 数据源说明
+### 传统方法 vs 优化方法
 
-### 支持的数据源
+**传统方法**（每股6次API调用）:
+```
+1. 获取市场数据（OHLCV）
+2. 获取估值数据（PE/PB/PS）
+3. 获取ST状态
+4. 获取复权因子
+5. 获取基本信息
+6. 获取行业分类
+```
 
-| 数据源 | 类型 | 覆盖范围 | 优势 | 限制 |
-|--------|------|----------|------|------|
-| **Mootdx** | 免费 | A股全市场 | **K线下载快**(3.3倍于BaoStock) | 仅提供K线,无估值/基本面 |
-| **BaoStock** | 免费 | A股全市场 | 数据完整,接口稳定 | 单线程下载,速度较慢 |
-| **QStock** | 免费 | A股全市场 | 开源,更新及时 | 依赖问题(计划中) |
-| **Yahoo Finance** | 免费 | 全球市场 | 覆盖港股/美股 | A股数据较少(计划中) |
+**优化方法**（每股4次API调用）:
+```
+1. 统一获取（市场+估值+状态）← 三合一！
+2. 获取复权因子
+3. 获取基本信息
+4. 获取行业分类
+```
 
-### 混合数据源策略 🚀
+**性能对比**:
+| 指标 | 传统方法 | 优化方法 | 提升 |
+|------|---------|---------|------|
+| API调用/股 | 6次 | 4次 | **-33%** |
+| 5000股总调用 | 30,000次 | 20,000次 | 节省10,000次 |
 
-**默认使用混合数据源以获得最佳性能:**
+### 下载时间估算
 
-- **K线数据(OHLCV)**: Mootdx (快,~1-2秒/股,**推荐**)
-- **估值数据(PE/PB/PS)**: BaoStock (~2-3秒/股)
-- **复权因子**: BaoStock (~1秒/股)
-- **分红数据**: BaoStock (~1秒/股)
-- **基本面数据**: BaoStock (~10-15秒/股)
+以5000只股票为例：
 
-**性能对比:**
+| 模式 | 时间范围 | 预计耗时 | 说明 |
+|------|---------|---------|------|
+| 首次完整下载 | 2017-01-01 至今 | ~8-10小时 | 包含所有历史数据 |
+| 增量更新(7天) | 最近7天 | ~30-40分钟 | 仅更新最新数据 |
+| 增量更新(30天) | 最近30天 | ~2-3小时 | 适合月度更新 |
 
-| 数据源组合 | 每股耗时 | 5600股总耗时 | 说明 |
-|----------|---------|-------------|------|
-| 纯BaoStock | ~20秒 | ~31小时 | 全部数据 |
-| **Mootdx+BaoStock** | **~15秒** | **~23小时** | 全部数据(推荐) |
-| Mootdx+BaoStock(跳过基本面) | ~4秒 | ~6小时 | 快速下载K线+估值 |
-
-### 数据映射方案
-
-本项目建立了完整的数据源字段到 PTrade 格式的映射关系:
-
-- **行情数据**: Mootdx `bars()` / BaoStock `query_history_k_data_plus()` → `ptrade_data.h5/stock_data`
-- **财务数据**: BaoStock 季频财务指标 → `ptrade_fundamentals.h5/fundamentals`
-- **估值数据**: BaoStock `query_history_k_data_plus()` → `ptrade_fundamentals.h5/valuation`
-- **复权因子**: BaoStock `query_adjust_factor()` → `ptrade_adj_pre.h5`
-- **除权除息**: BaoStock `query_dividend_data()` → `ptrade_data.h5/exrights`
-
-详细映射关系请参考: [DATA_MAPPING.md](docs/DATA_MAPPING.md)
-
-## 📚 文档
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [H5_DATA_STRUCTURE.md](docs/H5_DATA_STRUCTURE.md) | HDF5 文件详细数据结构 | ✅ 已完成 |
-| [DATA_MAPPING.md](docs/DATA_MAPPING.md) | 数据源到 H5 格式的映射方案 | 🚧 编写中 |
-| [BaoStock API Reference](docs/reference/baostock_api/BaoStock_API_Reference.md) | BaoStock 完整 API 文档 | ✅ 已完成 |
-| [QStock API Reference](docs/reference/qstock_api/QStock_API_Reference.md) | QStock 完整 API 文档 | ✅ 已完成 |
-| [Mootdx API Reference](docs/reference/mootdx_api/MOOTDX_API_Reference.md) | Mootdx 完整 API 文档 | ✅ 已完成 |
-
-## 🎯 核心功能
-
-### 数据获取
-- ✅ **混合数据源**: K线用Mootdx加速,估值/基本面用BaoStock(性能提升25%)
-- ✅ **智能过滤**: 自动区分股票/指数,只下载真实股票数据
-- ✅ **增量更新**: 智能识别已有数据,仅下载增量部分
-- ✅ **断点续传**: 支持中断后继续下载,跳过已完成的股票
-- ✅ **进度显示**: 流畅的进度条,实时显示成功/失败数量
-
-### 数据处理
-- ✅ **格式转换**: 自动转换为 SimTradeLab 兼容的 HDF5 格式
-- ✅ **数据清洗**: 去除异常值,补全缺失数据
-- ✅ **数据验证**: 完整性检查,质量评分
-- ✅ **复权处理**: 自动计算前复权/后复权因子
-
-### 数据质量
-- ✅ **缺失检测**: 自动检测数据缺口
-- ✅ **异常监控**: 识别价格异常、成交量异常
-- ✅ **多源校验**: 多数据源交叉验证数据准确性
-
-## 🏗️ 项目结构
+## 🏗️ 项目架构
 
 ```
 SimTradeData/
-├── simtradedata/           # 源代码
-│   ├── fetchers/          # 数据获取模块
-│   │   ├── baostock_fetcher.py    # BaoStock数据源
-│   │   └── mootdx_fetcher.py      # Mootdx数据源(K线加速)
-│   ├── converters/        # 格式转换模块
-│   ├── writers/           # HDF5 写入模块
-│   ├── utils/             # 工具函数
-│   ├── cli.py             # 命令行接口
-│   └── pipeline.py        # 数据处理流程
-├── data/                  # 生成的 H5 文件
-├── docs/                  # 文档
-│   ├── reference/         # API 参考文档
-│   └── *.md              # 各类说明文档
-├── tests/                 # 测试文件
-└── examples/              # 使用示例
+├── scripts/
+│   └── download_efficient.py      # 主下载脚本（优化版）
+├── simtradedata/
+│   ├── fetchers/
+│   │   ├── baostock_fetcher.py   # BaoStock基础封装
+│   │   └── unified_fetcher.py    # 统一数据获取（核心优化）
+│   ├── processors/
+│   │   └── data_splitter.py      # 数据分流处理
+│   ├── writers/
+│   │   └── h5_writer.py          # HDF5写入（优化版）
+│   └── utils/
+│       └── code_utils.py         # 工具函数
+├── data/                          # 生成的H5文件
+└── docs/                          # 文档
+```
+
+### 核心模块说明
+
+**1. UnifiedDataFetcher** - 统一数据获取
+- 一次API调用获取多种数据类型
+- 减少网络请求次数
+- 自动处理数据类型转换
+
+**2. DataSplitter** - 智能数据分流
+- 将统一数据分流到不同目标
+- 市场数据 → `ptrade_data.h5/stock_data`
+- 估值数据 → `ptrade_fundamentals.h5/valuation`
+- 状态数据 → 内存缓存（用于构建历史）
+
+**3. HDF5Writer** - 高效数据写入
+- 支持增量追加写入
+- 自动去重和合并
+- 压缩存储（blosc压缩算法）
+
+## 📊 数据结构
+
+### ptrade_data.h5
+```
+/stock_data/{symbol}     - 股票OHLCV数据
+/exrights/{symbol}       - 除权除息数据
+/stock_metadata          - 股票元数据（名称、上市日期等）
+/trade_days              - 交易日历
+/benchmark               - 基准指数数据
+/metadata                - 全局元数据（包含指数成分股历史）
+```
+
+### ptrade_fundamentals.h5
+```
+/valuation/{symbol}      - 估值指标（PE/PB/PS/PCF/换手率）
+```
+
+### ptrade_adj_pre.h5
+```
+/{symbol}                - 后复权因子序列
+```
+
+详细数据结构请参考: [H5_DATA_STRUCTURE.md](docs/H5_DATA_STRUCTURE.md)
+
+## 🔧 配置说明
+
+编辑 `scripts/download_efficient.py` 中的配置参数:
+
+```python
+# 输出目录配置
+OUTPUT_DIR = "data"            # 输出目录（HDF5文件保存位置）
+LOG_FILE = "data/download_efficient.log"  # 日志文件
+
+# 日期范围配置
+START_DATE = "2017-01-01"      # 起始日期
+END_DATE = None                # 结束日期（None表示当前日期）
+INCREMENTAL_DAYS = None        # 增量天数（None表示完整下载）
+
+# 批次配置
+BATCH_SIZE = 20                # 每批处理股票数
 ```
 
 ## 💡 使用示例
@@ -193,148 +189,94 @@ SimTradeData/
 ### Python API 使用
 
 ```python
-from simtradedata.pipeline import DataPipeline
+from simtradedata.fetchers.unified_fetcher import UnifiedDataFetcher
+from simtradedata.processors.data_splitter import DataSplitter
+from simtradedata.writers.h5_writer import HDF5Writer
 
-# 创建数据管道(默认使用Mootdx加速K线)
-pipeline = DataPipeline(
-    output_dir='data',
-    market_source='mootdx'  # 或 'baostock'
-)
+# 初始化组件
+fetcher = UnifiedDataFetcher()
+splitter = DataSplitter()
+writer = HDF5Writer(output_dir="data")  # 输出到data目录
 
-# 下载单只股票的全部数据
-with pipeline:
-    success = pipeline.fetch_and_write_stock(
-        symbol='600000.SH',
-        start_date='2024-01-01',
-        end_date='2024-12-31',
-        include_fundamentals=True
+fetcher.login()
+
+try:
+    # 1. 统一获取数据（一次API调用）
+    unified_data = fetcher.fetch_unified_daily_data(
+        symbol="600000.SS",
+        start_date="2024-01-01",
+        end_date="2024-11-22"
     )
 
-# 批量下载股票列表
-stock_list = ['600000.SH', '000001.SZ', '000002.SZ']
-results = pipeline.fetch_and_write_all_stocks(
-    stock_list=stock_list,
-    start_date='2024-01-01',
-    end_date='2024-12-31',
-    include_fundamentals=False,
-    skip_existing=True
-)
+    # 2. 分流数据
+    split_data = splitter.split_data(unified_data)
 
-print(f"成功: {results['success']}, 失败: {results['failure']}")
+    # 3. 写入不同文件
+    if 'market' in split_data:
+        writer.write_market_data("600000.SS", split_data['market'])
+
+    if 'valuation' in split_data:
+        writer.write_valuation("600000.SS", split_data['valuation'])
+
+finally:
+    fetcher.logout()
 ```
 
-### 命令行使用
+### 批量下载
 
-```bash
-# 下载全市场数据(使用Mootdx加速)
-poetry run python -m simtradedata.cli fetch-all \
-  --start-date 2024-01-01 \
-  --market-source mootdx
+```python
+from scripts.download_efficient import download_all_data
 
-# 下载指定股票
-poetry run python -m simtradedata.cli fetch \
-  "000001.SZ,600000.SH" \
-  --start-date 2024-01-01 \
-  --market-source mootdx
+# 完整下载
+download_all_data(incremental_days=None)
 
-# 增量更新最近30天
-poetry run python -m simtradedata.cli update --days 30
-
-# 验证数据完整性
-poetry run python -m simtradedata.cli validate
-
-# 查看数据统计
-poetry run python -m simtradedata.cli stats
+# 增量更新最近7天
+download_all_data(incremental_days=7)
 ```
 
-## ⚙️ 配置说明
+## 📚 文档
 
-创建配置文件 `config.yaml`:
+| 文档 | 说明 | 状态 |
+|------|------|------|
+| [H5_DATA_STRUCTURE.md](docs/H5_DATA_STRUCTURE.md) | HDF5文件详细数据结构 | ✅ 完成 |
+| [BaoStock_Data_Mapping.md](docs/BaoStock_Data_Mapping.md) | BaoStock数据映射方案 | ✅ 完成 |
+| [BaoStock API Reference](docs/reference/baostock_api/) | BaoStock API文档 | ✅ 完成 |
 
-```yaml
-# 数据源配置
-data_sources:
-  priority: ['baostock', 'qstock', 'yahoo']  # 数据源优先级
+## ⚠️ 注意事项
 
-  baostock:
-    enabled: true
-    max_retries: 3
+### BaoStock限制
+- **不支持并发**: BaoStock不支持多线程/多进程，所有下载均为顺序执行
+- **每日限额**: 建议控制在合理范围内，避免频繁大量请求
+- **网络稳定性**: 建议在网络稳定的环境下运行
 
-  qstock:
-    enabled: true
+### 数据质量
+- **数据来源**: 所有数据来自BaoStock免费数据源
+- **免责声明**: 数据仅供学习研究使用，请勿用于实盘交易
+- **质量检查**: 建议下载完成后使用验证工具检查数据完整性
 
-  yahoo:
-    enabled: true
-    proxy: null  # 可选代理配置
+### 增量更新建议
+- **首次下载**: 完整下载2017年至今的所有数据
+- **日常更新**: 使用 `--incremental 7` 更新最近一周
+- **月度更新**: 使用 `--incremental 30` 更新最近一月
+- **数据合并**: 程序会自动合并新旧数据，去除重复
 
-# 数据存储配置
-storage:
-  output_dir: 'data'
-  compression: 'gzip'  # HDF5 压缩算法
+## 🔄 版本历史
 
-# 下载配置
-download:
-  max_workers: 4  # 并发线程数
-  chunk_size: 100  # 每批次下载股票数
-  retry_delay: 5   # 失败重试延迟(秒)
-```
+### v0.2.0 (2025-11-22) - 性能优化版
+- ✅ 实现统一数据获取，API调用减少33%
+- ✅ 优化HDF5写入逻辑，移除不必要的线程锁
+- ✅ 增强增量更新机制，支持数据合并去重
+- ✅ 代码精简54%（7054行 → 3250行）
+- ✅ 删除未使用的方法和模块
 
-## 🔧 开发
-
-### 运行测试
-
-```bash
-# 运行所有测试
-poetry run pytest
-
-# 运行特定测试
-poetry run pytest tests/test_fetchers.py
-
-# 生成覆盖率报告
-poetry run pytest --cov=simtradedata --cov-report=html
-```
-
-### 代码风格
-
-项目使用 Black + isort 进行代码格式化:
-
-```bash
-# 格式化代码
-poetry run black simtradedata/
-poetry run isort simtradedata/
-
-# 检查代码风格
-poetry run black --check simtradedata/
-```
-
-## ⚠️ 数据说明
-
-### 数据完整性
-
-由于免费数据源的限制,某些数据可能不完整:
-
-| 数据类型 | 可用性 | 备注 |
-|----------|--------|------|
-| 日线行情 | ✅ 完整 | 覆盖全市场 |
-| 分钟线行情 | ⚠️ 部分 | 需要 Mootdx |
-| 财务数据 | ✅ 完整 | 季度更新 |
-| 估值指标 | ✅ 完整 | 每日更新 |
-| 股票列表 | ✅ 完整 | 包含退市股 |
-| 行业分类 | ✅ 完整 | 申万行业 |
-
-### 数据免责声明
-
-本项目提供的数据来源于公开的免费数据源,仅供学习研究使用。请勿用于实盘交易。使用者需自行承担使用数据的风险。
+### v0.1.0 (2024-11-14) - 初始版本
+- ✅ 基础数据下载功能
+- ✅ BaoStock数据源集成
+- ✅ PTrade格式兼容
 
 ## 🤝 贡献
 
-欢迎贡献代码、报告问题或提出建议!
-
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 提交 Pull Request
+欢迎贡献代码、报告问题或提出建议！
 
 ## 📄 许可证
 
@@ -342,10 +284,8 @@ poetry run black --check simtradedata/
 
 ## 🔗 相关链接
 
-- **SimTradeLab**: https://github.com/kay_ou/SimTradeLab - 量化策略回测框架
-- **BaoStock**: http://baostock.com/ - 免费证券数据平台
-- **QStock**: https://github.com/tkfy920/qstock - 开源 A 股数据接口
-- **Yahoo Finance**: https://finance.yahoo.com/ - 全球金融数据
+- **SimTradeLab**: https://github.com/kay_ou/SimTradeLab
+- **BaoStock**: http://baostock.com/
 
 ## 📮 联系方式
 
@@ -354,4 +294,4 @@ poetry run black --check simtradedata/
 
 ---
 
-**项目状态**: 🚧 开发中 | **当前版本**: v0.1.0 | **最后更新**: 2025-11-14
+**项目状态**: ✅ 稳定版 | **当前版本**: v0.2.0 | **最后更新**: 2025-11-22

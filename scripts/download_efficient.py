@@ -31,8 +31,8 @@ from simtradedata.writers.h5_writer import HDF5Writer
 warnings.filterwarnings("ignore", category=NaturalNameWarning)
 
 # Configuration
-OUTPUT_DIR = "."
-LOG_FILE = "download_efficient.log"
+OUTPUT_DIR = "data"
+LOG_FILE = "data/download_efficient.log"
 
 # Date range configuration
 START_DATE = "2017-01-01"
@@ -433,11 +433,17 @@ def download_all_data(incremental_days=None):
     print("\n" + "=" * 70)
     print("Download Complete!")
     print("=" * 70)
-    
-    ptrade_data_size = Path("ptrade_data.h5").stat().st_size / (1024 * 1024) if Path("ptrade_data.h5").exists() else 0
-    fundamentals_size = Path("ptrade_fundamentals.h5").stat().st_size / (1024 * 1024) if Path("ptrade_fundamentals.h5").exists() else 0
-    adj_size = Path("ptrade_adj_pre.h5").stat().st_size / (1024 * 1024) if Path("ptrade_adj_pre.h5").exists() else 0
-    
+
+    output_dir = Path(OUTPUT_DIR)
+    ptrade_data_path = output_dir / "ptrade_data.h5"
+    fundamentals_path = output_dir / "ptrade_fundamentals.h5"
+    adj_path = output_dir / "ptrade_adj_pre.h5"
+
+    ptrade_data_size = ptrade_data_path.stat().st_size / (1024 * 1024) if ptrade_data_path.exists() else 0
+    fundamentals_size = fundamentals_path.stat().st_size / (1024 * 1024) if fundamentals_path.exists() else 0
+    adj_size = adj_path.stat().st_size / (1024 * 1024) if adj_path.exists() else 0
+
+    print(f"\nOutput directory: {output_dir.absolute()}")
     print(f"ptrade_data.h5: {ptrade_data_size:.1f} MB")
     print(f"ptrade_fundamentals.h5: {fundamentals_size:.1f} MB")
     print(f"ptrade_adj_pre.h5: {adj_size:.1f} MB")

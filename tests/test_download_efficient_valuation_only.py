@@ -82,6 +82,26 @@ def test_valuation_only_batch_counts_written_valuation_as_updated():
     assert downloader.status_cache["000001.SZ"].equals(status)
 
 
+def test_valuation_only_downloads_single_missing_target_day():
+    valuation = pd.DataFrame(
+        {"pe_ttm": [10.0]},
+        index=pd.to_datetime(["2026-06-24"]),
+    )
+    downloader = make_valuation_only_downloader(
+        {"valuation": valuation, "status": pd.DataFrame()}
+    )
+    downloader.writer.get_max_date = lambda table, symbol=None: "2026-06-23"
+
+    result = downloader.download_stock_data(
+        "000001.SZ",
+        "2015-01-01",
+        "2026-06-24",
+    )
+
+    assert result == {"stock_code": "000001.SZ"}
+    assert len(downloader.writer.valuation_writes) == 1
+
+
 def test_valuation_only_batch_does_not_count_empty_split_as_updated():
     downloader = make_valuation_only_downloader(
         {

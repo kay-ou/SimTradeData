@@ -98,8 +98,9 @@ class EfficientBaoStockDownloader:
             if actual_start > start_date:
                 start_date = actual_start
 
-            # Skip if already up to date
-            if start_date >= end_date:
+            # BaoStock date ranges are inclusive; query the target day when
+            # the per-symbol cursor is exactly equal to the requested end date.
+            if start_date > end_date:
                 return None
 
             unified_df = self.unified_fetcher.fetch_unified_daily_data(

@@ -74,7 +74,8 @@ def main() -> int:
     args = parser.parse_args()
 
     with ProcessLock(LOCK_FILE):
-        con = duckdb.connect(args.db, read_write=True)
+        # read_only=False for duckdb < 1.0 compatibility (read_write kwarg is newer)
+        con = duckdb.connect(args.db, read_only=False)
         try:
             symbols = [
                 row[0]
@@ -111,9 +112,7 @@ def main() -> int:
             existing = {
                 row[0]: row[1]
                 for row in con.execute(
-                    "SELECT symbol, blocks FROM stock_metadata "
-                    "WHERE blocks IS NOT NULL AND symbol = ANY(?)",
-                    [todo],
+                    "SELECT symbol, blocks FROM stock_metadata WHERE blocks IS NOT NULL"
                 ).fetchall()
             }
 

@@ -611,26 +611,29 @@ def check_integrity(
                 expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
             )
 
-            # Industry blocks coverage (fail closed when ZJHHY data is missing)
-            blocks_total, blocks_zjhhy = conn.execute(
-                "SELECT COUNT(*), "
-                "SUM(CASE WHEN blocks LIKE '%ZJHHY%' THEN 1 ELSE 0 END) "
-                "FROM stock_metadata"
-            ).fetchone()
+            # Industry blocks coverage over the active universe (fail closed
+            # when ZJHHY data is missing for tradable stocks)
+            zjhhy_symbols = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT symbol FROM stock_metadata "
+                    "WHERE blocks LIKE '%ZJHHY%'"
+                ).fetchall()
+            }
+            blocks_total = len(symbols)
+            blocks_zjhhy = sum(1 for symbol in symbols if symbol in zjhhy_symbols)
             report["stock_metadata_blocks"] = {
                 "total": blocks_total,
-                "zjhhy": blocks_zjhhy or 0,
+                "zjhhy": blocks_zjhhy,
             }
-            blocks_ratio = (
-                (blocks_zjhhy or 0) / blocks_total if blocks_total else 0.0
-            )
+            blocks_ratio = blocks_zjhhy / blocks_total if blocks_total else 0.0
             _add_check(
                 checks,
                 "stock_metadata_blocks_coverage",
                 blocks_ratio >= BLOCKS_COVERAGE_FLOOR,
                 expected=f">= {BLOCKS_COVERAGE_FLOOR:.0%}",
                 actual=f"{blocks_ratio:.1%}",
-                zjhhy=blocks_zjhhy or 0,
+                zjhhy=blocks_zjhhy,
                 total=blocks_total,
             )
 

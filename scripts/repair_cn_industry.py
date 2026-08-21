@@ -174,17 +174,21 @@ def main() -> int:
             finally:
                 fetcher.logout()
 
-            total, non_null = con.execute(
-                "SELECT COUNT(*), COUNT(blocks) FROM stock_metadata"
+            total, zjhhy_count = con.execute(
+                """
+                SELECT COUNT(*),
+                       SUM(CASE WHEN blocks LIKE '%ZJHHY%' THEN 1 ELSE 0 END)
+                FROM stock_metadata
+                WHERE de_listed_date IS NULL
+                   OR CAST(de_listed_date AS VARCHAR) >= CURRENT_DATE::VARCHAR
+                """
             ).fetchone()
-            zjhhy_count = con.execute(
-                "SELECT COUNT(*) FROM stock_metadata "
-                "WHERE blocks IS NOT NULL AND blocks LIKE '%ZJHHY%'"
-            ).fetchone()[0]
+            total = total or 0
+            zjhhy_count = zjhhy_count or 0
             coverage = (zjhhy_count / total) if total else 0.0
             print(
-                f"blocks backfill complete: {zjhhy_count}/{total} with ZJHHY "
-                f"({coverage:.1%}), {len(failed)} failures"
+                f"blocks backfill complete: {zjhhy_count}/{total} active stocks "
+                f"with ZJHHY ({coverage:.1%}), {len(failed)} failures"
             )
             if failed:
                 for symbol, error in failed[:10]:

@@ -16,7 +16,11 @@ from typing import List, Optional
 import duckdb
 import pandas as pd
 
-from simtradedata.config.field_mappings import BENCHMARK_CONFIG
+from simtradedata.config.field_mappings import (
+    BENCHMARK_CONFIG,
+    BENCHMARK_HISTORY_FLOOR,
+    benchmark_history_ok,
+)
 from simtradedata.utils.paths import DUCKDB_PATH, safe_rmtree
 from simtradedata.validators.data_validator import validate_before_write
 
@@ -2981,6 +2985,29 @@ class DuckDBWriter:
                     TO '{output_dir / "benchmark.parquet"}'
                     (FORMAT PARQUET, CODEC 'ZSTD')
                 """)
+
+        # Fail closed when the CN benchmark export is missing or truncated.
+        # TDX index bars are depth-limited, so a short history here means the
+        # released package would silently drop early benchmark dates.
+        if market == "cn":
+            benchmark_path = output_dir / "benchmark.parquet"
+            if not benchmark_path.exists():
+                raise ValueError("benchmark export missing for CN market")
+            # Query the export source rather than re-reading the written file
+            if has_stocks_benchmark > 0:
+                min_date = self.conn.execute(
+                    f"SELECT MIN(date)::VARCHAR FROM stocks "
+                    f"WHERE symbol = '{benchmark_symbol}'"
+                ).fetchone()[0]
+            else:
+                min_date = self.conn.execute(
+                    "SELECT MIN(date)::VARCHAR FROM benchmark"
+                ).fetchone()[0]
+            if not benchmark_history_ok(min_date):
+                raise ValueError(
+                    f"benchmark export truncated: earliest date {min_date}, "
+                    f"required <= {BENCHMARK_HISTORY_FLOOR}"
+                )
 
         # trade_days.parquet — merge DB trade_days with dates from stocks table
         # The trade_days table may only have recent dates (from mootdx),

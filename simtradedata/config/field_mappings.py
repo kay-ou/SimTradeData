@@ -113,3 +113,19 @@ BENCHMARK_CONFIG = {
         '399006.SZ': 'CYBZ',       # 创业板指
     }
 }
+
+# Benchmark history floor for CN exports: the exported benchmark must cover
+# dates back to at least this value. TDX index bars are depth-limited, so a
+# truncated export fails the gate instead of shipping silently.
+# Value matches the documented package contract:
+# docs/PTRADE_PARQUET_FORMAT.md (version.parquet start_date = 2015-01-01)
+BENCHMARK_HISTORY_FLOOR = '2015-01-01'
+
+# Minimum share of CN stock_metadata rows that must carry industry blocks,
+# enforced by the pre-release integrity gate and the repair job's target.
+BLOCKS_COVERAGE_FLOOR = 0.95
+
+
+def benchmark_history_ok(start_text: str | None) -> bool:
+    """True when the earliest benchmark date covers BENCHMARK_HISTORY_FLOOR."""
+    return bool(start_text) and start_text <= BENCHMARK_HISTORY_FLOOR

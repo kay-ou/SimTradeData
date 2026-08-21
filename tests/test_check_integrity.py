@@ -60,8 +60,33 @@ def create_db(path, include_active_valuation=True, include_security_type=True):
         if include_active_valuation:
             valuation_rows.append(("000001.SZ", "2026-06-24"))
         conn.executemany("INSERT INTO valuation VALUES (?, ?)", valuation_rows)
+        _seed_gate_tables(conn)
     finally:
         conn.close()
+
+
+def _seed_gate_tables(conn):
+    """Seed benchmark history and industry blocks required by the fail-closed gates."""
+    conn.execute(
+        """
+        CREATE TABLE benchmark (
+            date DATE PRIMARY KEY,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume DOUBLE,
+            money DOUBLE
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO benchmark VALUES ('2015-01-01', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)"
+    )
+    conn.execute("ALTER TABLE stock_metadata ADD COLUMN blocks VARCHAR")
+    conn.execute(
+        "UPDATE stock_metadata SET blocks = '{\"ZJHHY\": [[\"J66\", \"货币金融服务\"]]}'"
+    )
 
 
 def test_integrity_passes_when_active_cn_stocks_are_complete(tmp_path):
@@ -149,6 +174,7 @@ def test_integrity_excludes_delisted_name_with_placeholder_delisted_date(tmp_pat
         )
         conn.execute("INSERT INTO stocks VALUES ('000001.SZ', '2026-06-24')")
         conn.execute("INSERT INTO valuation VALUES ('000001.SZ', '2026-06-24')")
+        _seed_gate_tables(conn)
     finally:
         conn.close()
 
@@ -200,6 +226,7 @@ def test_integrity_excludes_metadata_not_seen_in_latest_stock_pool(tmp_path):
         )
         conn.execute("INSERT INTO stocks VALUES ('000001.SZ', '2026-06-24')")
         conn.execute("INSERT INTO valuation VALUES ('000001.SZ', '2026-06-24')")
+        _seed_gate_tables(conn)
     finally:
         conn.close()
 
@@ -259,6 +286,7 @@ def test_integrity_ignores_stale_stock_pool_when_metadata_is_current(tmp_path):
                 ("000002.SZ", "2026-06-24"),
             ],
         )
+        _seed_gate_tables(conn)
     finally:
         conn.close()
 

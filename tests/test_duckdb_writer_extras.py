@@ -14,6 +14,12 @@ from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
 from simtradedata.writers.duckdb_writer import DuckDBWriter
 
 
+def _seed_benchmark(conn):
+    conn.execute(
+        "INSERT INTO benchmark VALUES ('2015-01-01', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)"
+    )
+
+
 @pytest.mark.unit
 class TestWriteMoneyFlow:
     def setup_method(self):
@@ -110,6 +116,7 @@ class TestExpandedFundamentals:
             "listing_status": ["1"],
             "blocks": ["{}"],
         }))
+        _seed_benchmark(self.writer.conn)
         self.writer.export_to_parquet(str(tmp_path), market="cn")
 
         exported = pq.read_table(
@@ -233,13 +240,13 @@ class TestExportDelta:
             "dividend": [0.2],
         })
         benchmark_df = pd.DataFrame({
-            "date": pd.to_datetime(["2026-06-22"]),
-            "open": [4000.0],
-            "high": [4010.0],
-            "low": [3990.0],
-            "close": [4005.0],
-            "volume": [100000.0],
-            "money": [2e9],
+            "date": pd.to_datetime(["2015-01-01", "2026-06-22"]),
+            "open": [3000.0, 4000.0],
+            "high": [3010.0, 4010.0],
+            "low": [2990.0, 3990.0],
+            "close": [3005.0, 4005.0],
+            "volume": [50000.0, 100000.0],
+            "money": [1e9, 2e9],
         })
 
         self.writer.write_market_data("000001.SZ", market_df)
@@ -438,6 +445,7 @@ class TestExportDelta:
         self.writer.write_market_data("000001.SZ", market_df)
         self.writer.write_valuation("000001.SZ", valuation_df)
         self.writer.write_valuation("000002.SZ", valuation_df)
+        _seed_benchmark(self.writer.conn)
 
         self.writer.export_to_parquet(str(tmp_path), market="cn")
 

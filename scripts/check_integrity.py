@@ -12,9 +12,16 @@ from typing import Any
 
 import duckdb
 
+from simtradedata.config.field_mappings import (
+    BENCHMARK_CONFIG,
+    BENCHMARK_HISTORY_FLOOR,
+    BLOCKS_COVERAGE_FLOOR,
+    benchmark_history_ok,
+)
 from simtradedata.utils.paths import DUCKDB_PATH
 
 DB_PATH = str(DUCKDB_PATH)
+
 CN_FALLBACK_PREFIXES = {
     "000",
     "001",
@@ -411,6 +418,27 @@ def _inspect_export(
         path=str(metadata_file),
     )
 
+    if market == "cn":
+        benchmark_file = export_dir / "benchmark.parquet"
+        _add_check(
+            checks,
+            "benchmark_export_present",
+            benchmark_file.exists(),
+            path=str(benchmark_file),
+        )
+        if benchmark_file.exists():
+            min_date = duckdb.sql(
+                "SELECT MIN(date)::VARCHAR FROM read_parquet(?)",
+                params=[str(benchmark_file)],
+            ).fetchone()[0]
+            _add_check(
+                checks,
+                "benchmark_export_history_coverage",
+                benchmark_history_ok(min_date),
+                actual=min_date,
+                expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
+            )
+
     fundamentals_dir = export_dir / "fundamentals"
     _add_check(
         checks,
@@ -554,6 +582,57 @@ def check_integrity(
                 [target_date],
             ).fetchone()[0]
             report["delisted_missing_valuation"] = delisted_missing_valuation
+
+            # Benchmark history coverage (fail closed on truncated index data).
+            # Mirrors _export_metadata: the stocks row for the default index
+            # wins over the benchmark table, so check what would be exported.
+            benchmark_symbol = BENCHMARK_CONFIG["default_index"]
+            if conn.execute(
+                "SELECT COUNT(*) FROM stocks WHERE symbol = ?",
+                [benchmark_symbol],
+            ).fetchone()[0] > 0:
+                benchmark_start = conn.execute(
+                    "SELECT MIN(date) FROM stocks WHERE symbol = ?",
+                    [benchmark_symbol],
+                ).fetchone()[0]
+            elif _table_exists(conn, "benchmark"):
+                benchmark_start = conn.execute(
+                    "SELECT MIN(date) FROM benchmark"
+                ).fetchone()[0]
+            else:
+                benchmark_start = None
+            benchmark_start_text = _date_text(benchmark_start)
+            report["benchmark_start"] = benchmark_start_text
+            _add_check(
+                checks,
+                "benchmark_history_coverage",
+                benchmark_history_ok(benchmark_start_text),
+                actual=benchmark_start_text,
+                expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
+            )
+
+            # Industry blocks coverage (fail closed when ZJHHY data is missing)
+            blocks_total, blocks_zjhhy = conn.execute(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN blocks LIKE '%ZJHHY%' THEN 1 ELSE 0 END) "
+                "FROM stock_metadata"
+            ).fetchone()
+            report["stock_metadata_blocks"] = {
+                "total": blocks_total,
+                "zjhhy": blocks_zjhhy or 0,
+            }
+            blocks_ratio = (
+                (blocks_zjhhy or 0) / blocks_total if blocks_total else 0.0
+            )
+            _add_check(
+                checks,
+                "stock_metadata_blocks_coverage",
+                blocks_ratio >= BLOCKS_COVERAGE_FLOOR,
+                expected=f">= {BLOCKS_COVERAGE_FLOOR:.0%}",
+                actual=f"{blocks_ratio:.1%}",
+                zjhhy=blocks_zjhhy or 0,
+                total=blocks_total,
+            )
 
             # Fundamentals coverage check
             if _table_exists(conn, "fundamentals"):

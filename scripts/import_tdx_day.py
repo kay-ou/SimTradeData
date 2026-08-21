@@ -30,7 +30,7 @@ import logging
 import struct
 import zipfile
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Iterator, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -131,7 +131,9 @@ def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFram
     return df
 
 
-def iter_day_files_from_zip(zip_path: Path) -> Iterator[Tuple[str, bytes]]:
+def iter_day_files_from_zip(
+    zip_path: Path, wanted: Optional[set[str]] = None
+) -> Iterator[Tuple[str, bytes]]:
     """
     Iterate over .day files in a ZIP archive.
 
@@ -139,6 +141,8 @@ def iter_day_files_from_zip(zip_path: Path) -> Iterator[Tuple[str, bytes]]:
 
     Args:
         zip_path: Path to ZIP file
+        wanted: If given, only yield PTrade codes in this set
+            (filters before decompressing each member)
 
     Yields:
         Tuples of (filename, file_content)
@@ -156,6 +160,9 @@ def iter_day_files_from_zip(zip_path: Path) -> Iterator[Tuple[str, bytes]]:
 
             # Extract filename (e.g., sh600000.day)
             filename = normalized.split("/")[-1]
+
+            if wanted is not None and filename_to_ptrade_code(filename) not in wanted:
+                continue
 
             yield filename, zf.read(name)
 

@@ -1,8 +1,12 @@
 """Tests for ETF support in TDX binary importer."""
 
+import importlib
 import struct
 
 import pytest
+import pandas as pd
+
+import scripts.import_tdx_day as import_tdx_day
 
 from scripts.import_tdx_day import (
     RECORD_FORMAT,
@@ -62,3 +66,41 @@ class TestParseTdxDayFileEtf:
         assert len(df) == 1
         assert df.iloc[0]["close"] == pytest.approx(1.080)
         assert df.iloc[0]["open"] == pytest.approx(1.050)
+
+@pytest.mark.unit
+class TestParseTdxDayFileHistoryStart:
+    """parse_tdx_day_file honors the optional SIMTRADE_CN_HISTORY_START trim."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_env(self, monkeypatch):
+        yield
+        monkeypatch.delenv("SIMTRADE_CN_HISTORY_START", raising=False)
+        importlib.reload(import_tdx_day)
+
+    def test_full_history_without_env(self, monkeypatch):
+        monkeypatch.delenv("SIMTRADE_CN_HISTORY_START", raising=False)
+        importlib.reload(import_tdx_day)
+        data = _make_record(19901219, 100, 110, 90, 105, 1e7, 100000)
+        df = import_tdx_day.parse_tdx_day_file(data)
+        assert len(df) == 1
+        assert df.iloc[0]["date"] == pd.Timestamp("1990-12-19")
+
+    def test_pre_history_rows_skipped(self, monkeypatch):
+        monkeypatch.setenv("SIMTRADE_CN_HISTORY_START", "2005-04-08")
+        importlib.reload(import_tdx_day)
+        data = (
+            _make_record(19901219, 100, 110, 90, 105, 1e7, 100000)
+            + _make_record(20050407, 100, 110, 90, 105, 1e7, 100000)
+            + _make_record(20050408, 100, 110, 90, 105, 1e7, 100000)
+        )
+        df = import_tdx_day.parse_tdx_day_file(data)
+        assert len(df) == 1
+        assert df.iloc[0]["date"] == pd.Timestamp("2005-04-08")
+
+    def test_post_history_rows_kept(self, monkeypatch):
+        monkeypatch.setenv("SIMTRADE_CN_HISTORY_START", "2005-04-08")
+        importlib.reload(import_tdx_day)
+        data = _make_record(20260101, 100, 110, 90, 105, 1e7, 100000)
+        df = import_tdx_day.parse_tdx_day_file(data)
+        assert len(df) == 1
+        assert df.iloc[0]["date"] == pd.Timestamp("2026-01-01")

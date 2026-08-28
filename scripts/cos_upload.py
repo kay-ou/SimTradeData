@@ -401,8 +401,13 @@ def main():
         help="COS key prefix / directory (e.g. 'data/')",
     )
     parser.add_argument(
-        "--max-releases", type=int, default=30,
-        help="Keep at most this many releases in releases.json (default: 30)",
+        "--max-releases", type=int, default=120,
+        help=(
+            "Keep at most this many releases in releases.json (default: 120). "
+            "Each delta needs every intermediate release in its chain; too short "
+            "a window breaks the chain and forces older clients back to a full "
+            "download."
+        ),
     )
     args = parser.parse_args()
 

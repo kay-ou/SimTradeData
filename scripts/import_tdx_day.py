@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import struct
 import zipfile
 from pathlib import Path
@@ -41,6 +42,11 @@ from simtradedata.writers.duckdb_writer import DEFAULT_DB_PATH, DuckDBWriter
 # Configuration
 LOG_FILE = "data/import_tdx_day.log"
 BATCH_SIZE = 50  # Number of stocks per transaction
+
+# Optional per-deployment history trim (YYYYMMDD): only enforced when the
+# deployment sets SIMTRADE_CN_HISTORY_START; unset imports the full history.
+_env_history_start = os.environ.get("SIMTRADE_CN_HISTORY_START")
+CN_HISTORY_START_INT = int(_env_history_start.replace("-", "")) if _env_history_start else None
 
 # TDX binary format constants
 RECORD_SIZE = 32  # bytes per record
@@ -106,6 +112,10 @@ def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFram
 
             # Skip invalid dates
             if year < 1990 or year > 2100 or month < 1 or month > 12 or day < 1 or day > 31:
+                continue
+
+            # Skip rows before the configured history start (when set)
+            if CN_HISTORY_START_INT is not None and date_int < CN_HISTORY_START_INT:
                 continue
 
             # Convert prices from fen to yuan

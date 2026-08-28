@@ -5,6 +5,8 @@ This module contains all field mapping definitions from data sources to PTrade f
 Supports: BaoStock, mootdx
 """
 
+import os
+
 # BaoStock -> PTrade field mappings
 
 MARKET_FIELD_MAP = {
@@ -120,6 +122,12 @@ BENCHMARK_CONFIG = {
 # Value matches the documented package contract:
 # docs/PTRADE_PARQUET_FORMAT.md (version.parquet start_date = 2015-01-01)
 BENCHMARK_HISTORY_FLOOR = '2015-01-01'
+
+# Optional per-deployment CN daily history trim: rows before this date are
+# dropped at TDX import time. Opt-in via SIMTRADE_CN_HISTORY_START (YYYY-MM-DD);
+# unset = full history is imported (open-source default). Enables customer
+# deployments that only need data from a later start date.
+CN_HISTORY_START = os.environ.get("SIMTRADE_CN_HISTORY_START") or None
 
 # Minimum share of CN stock_metadata rows that must carry industry blocks,
 # enforced by the pre-release integrity gate and the repair job's target.

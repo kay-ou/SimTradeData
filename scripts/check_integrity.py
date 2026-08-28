@@ -16,6 +16,7 @@ from simtradedata.config.field_mappings import (
     BENCHMARK_CONFIG,
     BENCHMARK_HISTORY_FLOOR,
     BLOCKS_COVERAGE_FLOOR,
+    CN_HISTORY_START,
     benchmark_history_ok,
 )
 from simtradedata.utils.paths import DUCKDB_PATH
@@ -419,7 +420,7 @@ def _inspect_export(
     )
 
     if market == "cn":
-        benchmark_file = export_dir / "benchmark.parquet"
+        benchmark_file = export_dir / "metadata" / "benchmark.parquet"
         _add_check(
             checks,
             "benchmark_export_present",
@@ -610,6 +611,22 @@ def check_integrity(
                 actual=benchmark_start_text,
                 expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
             )
+
+            # CN daily history floor (fail closed, only when the deployment opts
+            # into a trim via SIMTRADE_CN_HISTORY_START): no rows before the
+            # configured start may exist, otherwise trimmed history ships again
+            # via any future full-history backfill source.
+            if market == "cn" and CN_HISTORY_START:
+                stocks_start_text = _date_text(
+                    conn.execute("SELECT MIN(date) FROM stocks").fetchone()[0]
+                )
+                _add_check(
+                    checks,
+                    "stocks_history_floor",
+                    bool(stocks_start_text) and stocks_start_text >= CN_HISTORY_START,
+                    actual=stocks_start_text,
+                    expected=f">= {CN_HISTORY_START}",
+                )
 
             # Industry blocks coverage over the active universe (fail closed
             # when ZJHHY data is missing for tradable stocks)

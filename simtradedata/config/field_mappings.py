@@ -125,8 +125,7 @@ BENCHMARK_HISTORY_FLOOR = '2015-01-01'
 
 # Optional per-deployment CN daily history trim: rows before this date are
 # dropped at TDX import time. Opt-in via SIMTRADE_CN_HISTORY_START (YYYY-MM-DD);
-# unset = full history is imported (open-source default). Enables customer
-# deployments that only need data from a later start date.
+# unset = full history is imported.
 CN_HISTORY_START = os.environ.get("SIMTRADE_CN_HISTORY_START") or None
 
 # Minimum share of CN stock_metadata rows that must carry industry blocks,

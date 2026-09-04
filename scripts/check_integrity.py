@@ -40,6 +40,36 @@ CN_FALLBACK_PREFIXES = {
 }
 CN_STANDARD_PREFIXES = CN_FALLBACK_PREFIXES
 
+# Tables whose rows are part of a CN release and must not contain dates before
+# the deployment history floor.  Audit/change-log tables are intentionally not
+# included: their timestamps describe write history, not released market data.
+# compact=True marks tables that store date as '%Y%m%d' VARCHAR instead of DATE.
+_CN_HISTORY_FLOOR_TABLES = (
+    ("stocks", False),
+    ("valuation", False),
+    ("fundamentals", False),
+    ("exrights", False),
+    ("benchmark", False),
+    ("trade_days", False),
+    ("money_flow", False),
+    ("lhb", False),
+    ("margin_trading", False),
+    ("index_constituents", True),
+    ("stock_status", True),
+)
+# Export layout of the floor tables that ship in the export package, relative
+# to the export dir (directory = per-symbol parquet files, file = single parquet).
+_CN_EXPORT_FLOOR_PATHS = {
+    "stocks": "stocks",
+    "valuation": "valuation",
+    "fundamentals": "fundamentals",
+    "exrights": "exrights",
+    "benchmark": "metadata/benchmark.parquet",
+    "trade_days": "metadata/trade_days.parquet",
+    "index_constituents": "metadata/index_constituents.parquet",
+    "stock_status": "metadata/stock_status.parquet",
+}
+
 
 def _json_default(value: Any) -> str:
     if isinstance(value, (date, datetime)):
@@ -121,6 +151,80 @@ def _table_counts(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
         name: conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
         for (name,) in tables
     }
+
+
+def _cn_history_floor_date() -> date | None:
+    """Parsed CN_HISTORY_START when set and canonical, else None."""
+    if not CN_HISTORY_START:
+        return None
+    try:
+        floor = date.fromisoformat(CN_HISTORY_START)
+    except ValueError:
+        return None
+    return floor if floor.isoformat() == CN_HISTORY_START else None
+
+
+def _history_floor_stats(
+    conn: duckdb.DuckDBPyConnection | None,
+    from_sql: str,
+    compact: bool,
+    params: list[Any],
+) -> tuple[Any, int, int]:
+    """(min date, invalid rows, rows before CN_HISTORY_START) for one table or parquet glob."""
+    parsed = (
+        "TRY_STRPTIME(CAST(date AS VARCHAR), '%Y%m%d')"
+        if compact
+        else "TRY_CAST(date AS DATE)"
+    )
+    sql = f"""
+        SELECT
+            MIN({parsed}),
+            COALESCE(SUM(
+                CASE WHEN date IS NOT NULL AND {parsed} IS NULL
+                     THEN 1 ELSE 0 END
+            ), 0),
+            COALESCE(SUM(
+                CASE WHEN {parsed} < ?::DATE THEN 1 ELSE 0 END
+            ), 0)
+        FROM {from_sql}
+    """
+    result = conn.execute(sql, params) if conn is not None else duckdb.sql(sql, params=params)
+    row = result.fetchone()
+    return row[0], int(row[1]), int(row[2])
+
+
+def _check_cn_history_floor(
+    conn: duckdb.DuckDBPyConnection,
+    checks: list[dict[str, Any]],
+) -> None:
+    """Fail closed when any released CN data table predates the configured floor."""
+    if not CN_HISTORY_START:
+        return
+    if _cn_history_floor_date() is None:
+        _add_check(
+            checks,
+            "cn_history_floor_config",
+            False,
+            actual=CN_HISTORY_START,
+            expected="canonical YYYY-MM-DD",
+        )
+        return
+
+    for table, compact in _CN_HISTORY_FLOOR_TABLES:
+        if not _table_exists(conn, table):
+            continue
+        min_date, invalid_count, before_count = _history_floor_stats(
+            conn, table, compact, [CN_HISTORY_START]
+        )
+        _add_check(
+            checks,
+            f"{table}_history_floor",
+            invalid_count == 0 and before_count == 0,
+            actual=_date_text(min_date),
+            expected=f">= {CN_HISTORY_START}",
+            invalid_count=invalid_count,
+            before_count=before_count,
+        )
 
 
 def _latest_date(
@@ -440,6 +544,32 @@ def _inspect_export(
                 expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
             )
 
+        if _cn_history_floor_date() is not None:
+            for table, compact in _CN_HISTORY_FLOOR_TABLES:
+                path_text = _CN_EXPORT_FLOOR_PATHS.get(table)
+                if path_text is None:
+                    continue
+                path = export_dir / path_text
+                paths = (
+                    [str(item) for item in path.glob("*.parquet")]
+                    if path.is_dir()
+                    else ([str(path)] if path.exists() else [])
+                )
+                if not paths:
+                    continue
+                min_date, invalid_count, before_count = _history_floor_stats(
+                    None, "read_parquet(?)", compact, [CN_HISTORY_START, paths]
+                )
+                _add_check(
+                    checks,
+                    f"{table}_export_history_floor",
+                    invalid_count == 0 and before_count == 0,
+                    actual=_date_text(min_date),
+                    expected=f">= {CN_HISTORY_START}",
+                    invalid_count=invalid_count,
+                    before_count=before_count,
+                )
+
     fundamentals_dir = export_dir / "fundamentals"
     _add_check(
         checks,
@@ -513,6 +643,9 @@ def check_integrity(
         )
         if target_date is None:
             return report
+
+        if market == "cn":
+            _check_cn_history_floor(conn, checks)
 
         symbols, anomaly_symbols = _stock_universe(conn, market, target_date)
         halted_symbols = _halted_symbols_on(conn, target_date) if market == "cn" else set()
@@ -611,22 +744,6 @@ def check_integrity(
                 actual=benchmark_start_text,
                 expected=f"<= {BENCHMARK_HISTORY_FLOOR}",
             )
-
-            # CN daily history floor (fail closed, only when the deployment opts
-            # into a trim via SIMTRADE_CN_HISTORY_START): no rows before the
-            # configured start may exist, otherwise trimmed history ships again
-            # via any future full-history backfill source.
-            if market == "cn" and CN_HISTORY_START:
-                stocks_start_text = _date_text(
-                    conn.execute("SELECT MIN(date) FROM stocks").fetchone()[0]
-                )
-                _add_check(
-                    checks,
-                    "stocks_history_floor",
-                    bool(stocks_start_text) and stocks_start_text >= CN_HISTORY_START,
-                    actual=stocks_start_text,
-                    expected=f">= {CN_HISTORY_START}",
-                )
 
             # Industry blocks coverage over the active universe (fail closed
             # when ZJHHY data is missing for tradable stocks)

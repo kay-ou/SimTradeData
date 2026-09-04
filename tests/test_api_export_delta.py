@@ -6,6 +6,7 @@ import sys
 import tarfile
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 
 from simtradedata.writers.duckdb_writer import DuckDBWriter
@@ -243,6 +244,7 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
 
     assert result.returncode == 0, result.stderr
     archive = tmp_path / "delta.tar.gz"
+    unpacked = tmp_path / "unpacked"
     with tarfile.open(archive, "r:gz") as tar:
         names = set(tar.getnames())
         assert names == {
@@ -253,6 +255,7 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
             "stock_metadata.parquet",
         }
         manifest = json.load(tar.extractfile("manifest.json"))
+        tar.extract("stock_status.parquet", unpacked, filter="data")
 
     assert manifest["package_format"] == "simtradedata_api_delta_v1"
     assert manifest["market"] == "cn"
@@ -267,6 +270,12 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
         "stock_metadata",
     }
     assert all(item["sha256"] for item in manifest["tables"])
+
+    symbols_type, symbols = duckdb.sql(
+        f"SELECT typeof(symbols), symbols FROM read_parquet('{unpacked / 'stock_status.parquet'}')"
+    ).fetchone()
+    assert symbols_type == "VARCHAR[]"
+    assert symbols == ["000001.SZ"]
 
 
 def test_api_delta_returns_empty_manifest_when_up_to_date(tmp_path):

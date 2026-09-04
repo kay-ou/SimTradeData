@@ -269,7 +269,9 @@ def export_api_delta(
                     conn,
                     table="stock_status",
                     sql=(
-                        "SELECT * FROM stock_status "
+                        # DB 中 symbols 存的是 JSON 字符串，导出为 list 与全量包格式对齐
+                        "SELECT date, status_type, symbols::JSON::VARCHAR[] AS symbols "
+                        "FROM stock_status "
                         f"WHERE date > '{start_key}' AND date <= '{end_key}' "
                         "ORDER BY date, status_type"
                     ),

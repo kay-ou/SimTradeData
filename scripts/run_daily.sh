@@ -18,6 +18,7 @@
 #   LOG_DIR             Directory for run logs (default: logs/daily)
 #   LOG_RETENTION_DAYS  Days to keep logs (default: 30)
 #   LOCAL_RELEASE_KEEP  Local release tarballs to keep (default: 16)
+#   DISK_ALERT_PERCENT  Alert when data dir filesystem usage exceeds this % (default: 85)
 #   DOWNLOAD_ATTEMPTS   Download + pre-release integrity attempts before giving up/no-op (default: 1)
 #   RETRY_INTERVAL_SECONDS Seconds between download retries (default: 1800)
 #   INTEGRITY_STRICT    Run integrity gates before/after release (default: 1)
@@ -41,6 +42,7 @@ LOCK_FILE="${LOCK_FILE:-/tmp/simtradedata_daily_${MARKET}.lock}"
 LOG_DIR="${LOG_DIR:-$SIMTRADE_DATA_DIR/logs/daily}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}"
 LOCAL_RELEASE_KEEP="${LOCAL_RELEASE_KEEP:-16}"
+DISK_ALERT_PERCENT="${DISK_ALERT_PERCENT:-85}"
 DOWNLOAD_ATTEMPTS="${DOWNLOAD_ATTEMPTS:-1}"
 RETRY_INTERVAL_SECONDS="${RETRY_INTERVAL_SECONDS:-1800}"
 INTEGRITY_STRICT="${INTEGRITY_STRICT:-1}"
@@ -185,6 +187,13 @@ log "  Log file:        $LOG_FILE"
 log "  Download tries:  $DOWNLOAD_ATTEMPTS"
 log "  Retry interval:  ${RETRY_INTERVAL_SECONDS}s"
 log "  Integrity gate:  $INTEGRITY_STRICT"
+
+# Disk usage guard: alert early when the data filesystem is nearly full.
+DISK_USAGE_PERCENT=$(df -P "$SIMTRADE_DATA_DIR" | awk 'NR==2 {gsub(/%/,""); print $5}')
+log "  Disk usage:      ${DISK_USAGE_PERCENT}%"
+if (( DISK_USAGE_PERCENT > DISK_ALERT_PERCENT )); then
+  alert "disk usage ${DISK_USAGE_PERCENT}% exceeds ${DISK_ALERT_PERCENT}%"
+fi
 
 cd "$SIMTRADE_DATA_DIR"
 

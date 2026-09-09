@@ -17,6 +17,7 @@
 #   LOCK_FILE           Path to lock file (default: /tmp/simtradedata_daily.lock)
 #   LOG_DIR             Directory for run logs (default: logs/daily)
 #   LOG_RETENTION_DAYS  Days to keep logs (default: 30)
+#   LOCAL_RELEASE_KEEP  Local release tarballs to keep (default: 16)
 #   DOWNLOAD_ATTEMPTS   Download + pre-release integrity attempts before giving up/no-op (default: 1)
 #   RETRY_INTERVAL_SECONDS Seconds between download retries (default: 1800)
 #   INTEGRITY_STRICT    Run integrity gates before/after release (default: 1)
@@ -39,6 +40,7 @@ ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
 LOCK_FILE="${LOCK_FILE:-/tmp/simtradedata_daily_${MARKET}.lock}"
 LOG_DIR="${LOG_DIR:-$SIMTRADE_DATA_DIR/logs/daily}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}"
+LOCAL_RELEASE_KEEP="${LOCAL_RELEASE_KEEP:-16}"
 DOWNLOAD_ATTEMPTS="${DOWNLOAD_ATTEMPTS:-1}"
 RETRY_INTERVAL_SECONDS="${RETRY_INTERVAL_SECONDS:-1800}"
 INTEGRITY_STRICT="${INTEGRITY_STRICT:-1}"
@@ -90,8 +92,12 @@ alert() {
   fi
 }
 
-cleanup_logs() {
+cleanup() {
   find "$LOG_DIR" -name "*.log" -mtime "+$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
+  local release_dir="${LOCAL_RELEASE_DIR:-$SIMTRADE_DATA_DIR/data/releases}"
+  ls -1 "$release_dir"/data-"$MARKET"-*.tar.gz 2>/dev/null | sort \
+    | head -n -"$LOCAL_RELEASE_KEEP" | xargs -r rm -f
+  rm -f "$SIMTRADE_DATA_DIR/data/downloads/hsjday.zip"
 }
 
 tracks_local_release_version() {
@@ -241,25 +247,25 @@ done
 
 if [[ -z "$NEW_VERSION" ]]; then
   alert "No data in stocks table after download"
-  cleanup_logs
+  cleanup
   exit 1
 fi
 
 if [[ "$DOWNLOAD_RC" -ne 0 ]]; then
   if [[ -n "$PRE_RELEASE_INTEGRITY_REPORT" ]]; then
     alert "pre-release integrity gate failed after ${DOWNLOAD_ATTEMPTS} attempts (last report: $PRE_RELEASE_INTEGRITY_REPORT)"
-    cleanup_logs
+    cleanup
     exit 1
   fi
   alert "download failed after ${DOWNLOAD_ATTEMPTS} attempts (last exit code: ${DOWNLOAD_RC})"
-  cleanup_logs
+  cleanup
   exit "$DOWNLOAD_RC"
 fi
 
 if [[ "$PRE_RELEASE_INTEGRITY_OK" != "1" ]]; then
   log "No new data after ${DOWNLOAD_ATTEMPTS} attempts (version unchanged: $NEW_VERSION). Skipping release."
   log "=== Pipeline Complete (no-op) ==="
-  cleanup_logs
+  cleanup
   exit 0
 fi
 
@@ -277,7 +283,7 @@ fi
 
 if ! bash scripts/release_data.sh $RELEASE_ARGS; then
   alert "release_data.sh failed"
-  cleanup_logs
+  cleanup
   exit 1
 fi
 
@@ -287,13 +293,13 @@ if [[ -f "$MANIFEST_FILE" ]]; then
   MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('$MANIFEST_FILE')).get('version',''))")
   if [[ "$MANIFEST_VERSION" != "$NEW_VERSION" ]]; then
     alert "Freshness FAILED: manifest=${MANIFEST_VERSION}, db=${NEW_VERSION}"
-    cleanup_logs
+    cleanup
     exit 1
   fi
   log "Freshness verified: ${MANIFEST_VERSION}"
 else
   alert "Manifest missing: $MANIFEST_FILE"
-  cleanup_logs
+  cleanup
   exit 1
 fi
 
@@ -308,11 +314,11 @@ if [[ "$INTEGRITY_STRICT" == "1" ]]; then
     --json-output "$INTEGRITY_REPORT" \
     --strict; then
     alert "post-release integrity gate failed (report: $INTEGRITY_REPORT)"
-    cleanup_logs
+    cleanup
     exit 1
   fi
   log "Post-release integrity verified: $INTEGRITY_REPORT"
 fi
 
 log "=== Pipeline Complete (published $NEW_VERSION) ==="
-cleanup_logs
+cleanup

@@ -43,6 +43,9 @@ CN_STANDARD_PREFIXES = CN_FALLBACK_PREFIXES
 # Tables whose rows are part of a CN release and must not contain dates before
 # the deployment history floor.  Audit/change-log tables are intentionally not
 # included: their timestamps describe write history, not released market data.
+# index_constituents is also exempt: it is fully rewritten daily by the
+# customer-redis index-sync job, whose source data predates the floor and is
+# not under this pipeline's control.
 # compact=True marks tables that store date as '%Y%m%d' VARCHAR instead of DATE.
 _CN_HISTORY_FLOOR_TABLES = (
     ("stocks", False),
@@ -54,7 +57,6 @@ _CN_HISTORY_FLOOR_TABLES = (
     ("money_flow", False),
     ("lhb", False),
     ("margin_trading", False),
-    ("index_constituents", True),
     ("stock_status", True),
 )
 # Export layout of the floor tables that ship in the export package, relative
@@ -66,7 +68,6 @@ _CN_EXPORT_FLOOR_PATHS = {
     "exrights": "exrights",
     "benchmark": "metadata/benchmark.parquet",
     "trade_days": "metadata/trade_days.parquet",
-    "index_constituents": "metadata/index_constituents.parquet",
     "stock_status": "metadata/stock_status.parquet",
 }
 

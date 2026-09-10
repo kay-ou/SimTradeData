@@ -66,7 +66,7 @@ def test_integrity_history_floor_date_tables(
     }
     assert bool(floor_failed) is expect_floor_fail
     if expect_floor_fail:
-        assert {"index_constituents_history_floor", "stock_status_history_floor"} <= floor_failed
+        assert "stock_status_history_floor" in floor_failed
 
 
 def test_integrity_rejects_pre_floor_export_metadata(tmp_path, monkeypatch):
@@ -90,7 +90,7 @@ def test_integrity_rejects_pre_floor_export_metadata(tmp_path, monkeypatch):
         export_dir / "metadata" / "benchmark.parquet", index=False
     )
     pd.DataFrame({"date": ["20050430"]}).to_parquet(
-        export_dir / "metadata" / "index_constituents.parquet", index=False
+        export_dir / "metadata" / "stock_status.parquet", index=False
     )
     (export_dir / "manifest.json").write_text(
         json.dumps({"version": "2005-05-09", "date_range": {"end": "2005-05-09"}}),
@@ -103,4 +103,4 @@ def test_integrity_rejects_pre_floor_export_metadata(tmp_path, monkeypatch):
     )
 
     failed = {check["name"] for check in report["checks"] if check["status"] == "fail"}
-    assert "index_constituents_export_history_floor" in failed
+    assert "stock_status_export_history_floor" in failed

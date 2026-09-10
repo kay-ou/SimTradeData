@@ -26,7 +26,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="mootdx")
 import pandas as pd  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
-from simtradedata.config.field_mappings import BENCHMARK_CONFIG  # noqa: E402
+from simtradedata.config.field_mappings import (  # noqa: E402
+    BENCHMARK_CONFIG,
+    CN_HISTORY_START,
+)
 from simtradedata.fetchers.mootdx_unified_fetcher import MootdxUnifiedFetcher  # noqa: E402
 from simtradedata.utils.process_lock import ProcessLock  # noqa: E402
 from simtradedata.writers.duckdb_writer import DEFAULT_DB_PATH, DuckDBWriter  # noqa: E402
@@ -276,6 +279,11 @@ class MootdxDownloader:
         )
         result["bonus_ps"] = fenhong_ps
         result["dividend"] = fenhong_ps
+
+        # Deployment floor: sparse-refill re-downloads full XDXR history, so drop
+        # pre-floor rows here to match TDX import behavior.
+        if CN_HISTORY_START:
+            result = result[result["date"] >= pd.to_datetime(CN_HISTORY_START)]
 
         return result
 

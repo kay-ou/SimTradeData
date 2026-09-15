@@ -548,6 +548,14 @@ def test_upload_phase_flags_separate_archive_and_index_updates(
     assert indexes == expected_indexes
 
 
+def test_release_data_limits_cos_retention_to_max_releases():
+    release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
+    source = release_script.read_text()
+
+    assert 'MAX_RELEASES="${MAX_RELEASES:-44}"' in source
+    assert '--max-releases "$MAX_RELEASES"' in source
+
+
 def test_release_data_publishes_cos_delta_before_baseline():
     release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
     source = release_script.read_text()

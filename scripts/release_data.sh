@@ -24,6 +24,7 @@ COS_BUCKET="${COS_BUCKET:-}"
 COS_REGION="${COS_REGION:-}"
 COS_KEY_PREFIX="${COS_KEY_PREFIX:-}"
 LOCAL_RELEASE_DIR="${LOCAL_RELEASE_DIR:-$PROJECT_ROOT/data/releases}"
+MAX_RELEASES="${MAX_RELEASES:-44}"   # ~22 交易日基线 + 对应 delta ≈ 30 天
 
 # ── Parse arguments ─────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -279,7 +280,8 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
           --data-manifest "$data_manifest" \
           --bucket "$COS_BUCKET" \
           --region "$COS_REGION" \
-          --key-prefix "$COS_KEY_PREFIX"; then
+          --key-prefix "$COS_KEY_PREFIX" \
+          --max-releases "$MAX_RELEASES"; then
         if $delta_uploaded; then
           run_cos_upload \
             --index-only \
@@ -287,7 +289,8 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
             --data-manifest "$delta_manifest" \
             --bucket "$COS_BUCKET" \
             --region "$COS_REGION" \
-            --key-prefix "$COS_KEY_PREFIX" || cos_ok=false
+            --key-prefix "$COS_KEY_PREFIX" \
+            --max-releases "$MAX_RELEASES" || cos_ok=false
         fi
       elif $cos_mutation_allowed; then
         cos_ok=false

@@ -326,3 +326,15 @@ if [ "$MARKET" = "all" ]; then
 else
   release_market "$MARKET"
 fi
+
+# Prune COS data archives that are no longer referenced by releases.json.
+# Best-effort: a failed prune must not fail an otherwise successful publish.
+if [[ "$PUBLISH_TARGETS" == "cos" || "$PUBLISH_TARGETS" == "all" ]]; then
+  echo ""
+  echo "=== Pruning orphaned COS data archives ==="
+  prune_args=(--prune-orphans --bucket "$COS_BUCKET" --region "$COS_REGION")
+  if [[ -n "$COS_KEY_PREFIX" ]]; then
+    prune_args+=(--key-prefix "$COS_KEY_PREFIX")
+  fi
+  run_cos_upload "${prune_args[@]}" || echo "  WARNING: COS prune failed"
+fi

@@ -365,7 +365,109 @@ def _update_releases_index(
         releases = releases[:max_releases]
         print(f"  Trimmed {trimmed} old releases")
 
+    # Drop any delta whose base baseline was trimmed away (dangling chain)
+    baseline_versions = {
+        r.get("target_version") for r in releases if r.get("release_type") == "baseline"
+    }
+    kept = [
+        r
+        for r in releases
+        if r.get("release_type") != "delta"
+        or r.get("base_version") in baseline_versions
+    ]
+    if len(kept) != len(releases):
+        print(f"  Dropped {len(releases) - len(kept)} dangling delta release(s)")
+        releases = kept
+
     return _put_releases_json(bucket, region, releases, secret_id, secret_key)
+
+
+_DATA_ARCHIVE_RE = re.compile(r"^data-(cn|us)-.*\.tar\.gz$")
+
+
+def _parse_cos_timestamp(value: str) -> dt.datetime:
+    """Parse a COS LastModified timestamp like ``2026-09-14T13:51:27.000Z``."""
+    value = value.strip()
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return dt.datetime.fromisoformat(value)
+
+
+def _prune_orphans(
+    bucket: str,
+    region: str,
+    secret_id: str,
+    secret_key: str,
+    key_prefix: str,
+    max_age_hours: int,
+) -> None:
+    """Delete data archives that releases.json no longer references.
+
+    Only objects directly under ``key_prefix`` whose name matches the data
+    archive pattern are considered, and only those older than ``max_age_hours``
+    (a safety window against concurrent publishes). ``releases.json`` itself,
+    installer packages, and strategy-package uploads are never touched.
+    """
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+    except ImportError as exc:
+        raise RuntimeError("qcloud_cos SDK is required for --prune-orphans") from exc
+
+    releases = _fetch_releases_json(bucket, region, secret_id, secret_key, strict=True)
+    keep = {
+        asset.get("name")
+        for release in releases
+        for asset in release.get("assets", [])
+        if asset.get("name")
+    }
+
+    config = CosConfig(
+        Region=region, SecretId=secret_id, SecretKey=secret_key, Scheme="https"
+    )
+    client = CosS3Client(config)
+    prefix = key_prefix.strip("/")
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=max_age_hours)
+
+    orphans: list[tuple[str, int]] = []
+    marker = ""
+    while True:
+        resp = client.list_objects(Bucket=bucket, Marker=marker, MaxKeys=1000)
+        contents = resp.get("Contents", [])
+        for obj in contents:
+            key = obj["Key"]
+            rel = key
+            if prefix:
+                if not key.startswith(prefix + "/"):
+                    continue
+                rel = key[len(prefix) + 1 :]
+            if "/" in rel or not _DATA_ARCHIVE_RE.fullmatch(rel):
+                continue
+            if rel in keep:
+                continue
+            if _parse_cos_timestamp(obj["LastModified"]) >= cutoff:
+                continue
+            orphans.append((key, int(obj.get("Size", 0))))
+        if resp.get("IsTruncated") in ("false", False) or not contents:
+            break
+        marker = resp.get("NextMarker", contents[-1]["Key"])
+
+    if not orphans:
+        print("  No orphaned data archives to prune")
+        return
+
+    keys = [key for key, _ in orphans]
+    freed = sum(size for _, size in orphans)
+    for start in range(0, len(keys), 1000):
+        client.delete_objects(
+            Bucket=bucket,
+            Delete={
+                "Object": [{"Key": key} for key in keys[start : start + 1000]],
+                "Quiet": "true",
+            },
+        )
+    print(f"  Pruned {len(keys)} orphaned data archives ({freed / 1e6:.1f} MB)")
+    for key, size in orphans:
+        print(f"    - {key} ({size / 1e6:.1f} MB)")
 
 
 def main():
@@ -384,6 +486,17 @@ def main():
         "--print-latest-version",
         action="store_true",
         help="Print the latest published target version for --market",
+    )
+    parser.add_argument(
+        "--prune-orphans",
+        action="store_true",
+        help="Delete COS data archives no longer referenced by releases.json",
+    )
+    parser.add_argument(
+        "--prune-max-age-hours",
+        type=int,
+        default=24,
+        help="Only prune objects older than this many hours (default: 24)",
     )
     phase_group = parser.add_mutually_exclusive_group()
     phase_group.add_argument(
@@ -432,6 +545,21 @@ def main():
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         print(_latest_published_version(releases, args.market))
+        return
+
+    if args.prune_orphans:
+        try:
+            _prune_orphans(
+                args.bucket,
+                args.region,
+                secret_id,
+                secret_key,
+                args.key_prefix,
+                args.prune_max_age_hours,
+            )
+        except (RuntimeError, json.JSONDecodeError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
 
     if not args.file or not args.data_manifest:

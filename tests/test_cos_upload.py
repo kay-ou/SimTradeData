@@ -599,6 +599,7 @@ def _run_release_script(
     baseline_mode: str = "success",
     lookup_mode: str = "success",
     delta_index_mode: str = "success",
+    prune_mode: str = "success",
 ):
     project = tmp_path / "project"
     scripts = project / "scripts"
@@ -621,6 +622,11 @@ def _run_release_script(
             if [[ "$arg" == "--print-latest-version" ]]; then
               if [[ "$LOOKUP_MODE" == "fail" ]]; then exit 1; fi
               printf '%s\n' "$FAKE_BASE_VERSION"
+              exit 0
+            fi
+            if [[ "$arg" == "--prune-orphans" ]]; then
+              if [[ "$PRUNE_MODE" == "fail" ]]; then exit 1; fi
+              printf 'prune\n' >> "$PRUNE_LOG"
               exit 0
             fi
           done
@@ -735,6 +741,8 @@ print("|".join((tag, "delta" if delta else "baseline", m.get("from_version", "")
         "DELTA_INDEX_MODE": delta_index_mode,
         "UPLOAD_LOG": str(upload_log),
         "MKTEMP_LOG": str(mktemp_log),
+        "PRUNE_LOG": str(tmp_path / "prune.log"),
+        "PRUNE_MODE": prune_mode,
         "HARNESS_TMP": str(tmp_path),
         "REAL_PYTHON": sys.executable,
     }
@@ -930,4 +938,207 @@ def test_release_script_delta_index_failure_keeps_baseline_published_but_fails(
         "normal|data-cn-2026-07-10|baseline||2026-07-10|data-cn-2026-07-10.tar.gz",
         "index-only|data-cn-2026-07-09-to-2026-07-10-delta|delta|2026-07-09|2026-07-10|data-cn-2026-07-09-to-2026-07-10-delta.tar.gz",
     ]
+    assert not archive_dir.exists()
+
+
+def test_update_releases_index_drops_dangling_delta_after_trim(monkeypatch, capsys):
+    cos_upload = _load_cos_upload()
+    releases = [
+        {
+            "tag_name": "data-cn-2026-06-10",
+            "release_type": "baseline",
+            "target_version": "2026-06-10",
+        },
+        {
+            "tag_name": "data-cn-2026-06-11-to-2026-06-12-delta",
+            "release_type": "delta",
+            "base_version": "2026-06-11",
+            "target_version": "2026-06-12",
+        },
+        {
+            "tag_name": "data-cn-2026-06-12",
+            "release_type": "baseline",
+            "target_version": "2026-06-12",
+        },
+    ]
+    put_calls = []
+    monkeypatch.setattr(cos_upload, "_fetch_releases_json", lambda *a, **k: releases)
+    monkeypatch.setattr(
+        cos_upload, "_put_releases_json", lambda *a: put_calls.append(a) or True
+    )
+    entry = {
+        "tag_name": "data-cn-2026-06-13",
+        "release_type": "baseline",
+        "target_version": "2026-06-13",
+    }
+
+    assert (
+        cos_upload._update_releases_index(
+            "bucket", "region", "sid", "skey", entry["tag_name"], entry, 3
+        )
+        is True
+    )
+
+    final = put_calls[0][2]
+    assert [r["tag_name"] for r in final] == [
+        "data-cn-2026-06-13",
+        "data-cn-2026-06-10",
+    ]
+    assert "Dropped 1 dangling delta" in capsys.readouterr().out
+
+
+def test_update_releases_index_keeps_delta_with_surviving_base(monkeypatch):
+    cos_upload = _load_cos_upload()
+    releases = [
+        {
+            "tag_name": "data-cn-2026-06-11",
+            "release_type": "baseline",
+            "target_version": "2026-06-11",
+        },
+        {
+            "tag_name": "data-cn-2026-06-11-to-2026-06-12-delta",
+            "release_type": "delta",
+            "base_version": "2026-06-11",
+            "target_version": "2026-06-12",
+        },
+        {
+            "tag_name": "data-cn-2026-06-12",
+            "release_type": "baseline",
+            "target_version": "2026-06-12",
+        },
+    ]
+    put_calls = []
+    monkeypatch.setattr(cos_upload, "_fetch_releases_json", lambda *a, **k: releases)
+    monkeypatch.setattr(
+        cos_upload, "_put_releases_json", lambda *a: put_calls.append(a) or True
+    )
+    entry = {
+        "tag_name": "data-cn-2026-06-13",
+        "release_type": "baseline",
+        "target_version": "2026-06-13",
+    }
+
+    cos_upload._update_releases_index(
+        "bucket", "region", "sid", "skey", entry["tag_name"], entry, 10
+    )
+
+    final = put_calls[0][2]
+    assert [r["tag_name"] for r in final] == [
+        "data-cn-2026-06-13",
+        "data-cn-2026-06-11",
+        "data-cn-2026-06-11-to-2026-06-12-delta",
+        "data-cn-2026-06-12",
+    ]
+
+
+def test_prune_orphans_deletes_only_unreferenced_old_archives(monkeypatch):
+    cos_upload = _load_cos_upload()
+    now = cos_upload.dt.datetime.now(cos_upload.dt.timezone.utc)
+    old_ts = (now - cos_upload.dt.timedelta(hours=48)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+    recent_ts = (now - cos_upload.dt.timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+
+    releases = [
+        {
+            "release_type": "baseline",
+            "target_version": "2026-09-11",
+            "assets": [{"name": "data-cn-2026-09-11.tar.gz"}],
+        }
+    ]
+    monkeypatch.setattr(cos_upload, "_fetch_releases_json", lambda *a, **k: releases)
+
+    deletes = []
+
+    class FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        def list_objects(self, **kwargs):
+            return {
+                "IsTruncated": "false",
+                "Contents": [
+                    {
+                        "Key": "data-cn-2026-09-11.tar.gz",
+                        "Size": "1000",
+                        "LastModified": old_ts,
+                    },
+                    {
+                        "Key": "data-cn-2026-06-26.tar.gz",
+                        "Size": "1000",
+                        "LastModified": old_ts,
+                    },
+                    {
+                        "Key": "data-cn-2026-06-25-to-2026-06-26-delta.tar.gz",
+                        "Size": "10",
+                        "LastModified": old_ts,
+                    },
+                    {
+                        "Key": "data-cn-2026-09-02-floor-20050509.tar.gz",
+                        "Size": "1000",
+                        "LastModified": old_ts,
+                    },
+                    {
+                        "Key": "data-cn-2026-09-12.tar.gz",
+                        "Size": "1000",
+                        "LastModified": recent_ts,
+                    },
+                    {"Key": "releases.json", "Size": "1", "LastModified": old_ts},
+                    {
+                        "Key": "zhengguan/latest/windows.exe",
+                        "Size": "1000",
+                        "LastModified": old_ts,
+                    },
+                    {
+                        "Key": "strategy-packages/abc/pkg.stpkg",
+                        "Size": "1",
+                        "LastModified": old_ts,
+                    },
+                ],
+            }
+
+        def delete_objects(self, **kwargs):
+            deletes.append(kwargs)
+            return {}
+
+    fake_module = types.SimpleNamespace(
+        CosConfig=lambda **kwargs: kwargs,
+        CosS3Client=FakeClient,
+    )
+    monkeypatch.setitem(sys.modules, "qcloud_cos", fake_module)
+
+    cos_upload._prune_orphans("bucket", "region", "sid", "skey", "", 24)
+
+    deleted_keys = [
+        obj["Key"] for batch in deletes for obj in batch["Delete"]["Object"]
+    ]
+    assert deleted_keys == [
+        "data-cn-2026-06-26.tar.gz",
+        "data-cn-2026-06-25-to-2026-06-26-delta.tar.gz",
+        "data-cn-2026-09-02-floor-20050509.tar.gz",
+    ]
+
+
+def test_release_script_prunes_orphans_after_publish(tmp_path):
+    result, _, _, archive_dir = _run_release_script(
+        tmp_path, base_version="2026-07-09", delta_mode="success"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "prune.log").read_text().splitlines() == ["prune"]
+    assert not archive_dir.exists()
+
+
+def test_release_script_prune_failure_does_not_fail_publish(tmp_path):
+    result, _, _, archive_dir = _run_release_script(
+        tmp_path,
+        base_version="2026-07-09",
+        delta_mode="success",
+        prune_mode="fail",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING: COS prune failed" in result.stdout
     assert not archive_dir.exists()

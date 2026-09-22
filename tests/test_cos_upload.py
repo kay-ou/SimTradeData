@@ -552,7 +552,7 @@ def test_release_data_limits_cos_retention_to_max_releases():
     release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
     source = release_script.read_text()
 
-    assert 'MAX_RELEASES="${MAX_RELEASES:-44}"' in source
+    assert 'MAX_RELEASES="${MAX_RELEASES:-10}"' in source
     assert '--max-releases "$MAX_RELEASES"' in source
 
 

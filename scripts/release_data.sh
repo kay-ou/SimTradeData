@@ -24,7 +24,7 @@ COS_BUCKET="${COS_BUCKET:-}"
 COS_REGION="${COS_REGION:-}"
 COS_KEY_PREFIX="${COS_KEY_PREFIX:-}"
 LOCAL_RELEASE_DIR="${LOCAL_RELEASE_DIR:-$PROJECT_ROOT/data/releases}"
-MAX_RELEASES="${MAX_RELEASES:-44}"   # ~22 交易日基线 + 对应 delta ≈ 30 天
+MAX_RELEASES="${MAX_RELEASES:-10}"   # 只保留近 10 个 data-cn 归档（基线 + delta），控制存储费用
 
 # ── Parse arguments ─────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -104,6 +104,16 @@ target = d.date.fromisoformat(target_value)
 raise SystemExit(0 if base.isoformat() == base_value and target.isoformat() == target_value and base < target else 2)'
 }
 
+prune_local_archives() {
+  # 只保留近 MAX_RELEASES 个本地 data 归档；floor 历史基准包（data-*-floor-*）永久保留
+  find "$LOCAL_RELEASE_DIR" -maxdepth 1 -name "data-${market}-*.tar.gz" \
+    ! -name "data-${market}-*-floor-*" \
+    | sort -r | tail -n +"$((MAX_RELEASES + 1))" | while IFS= read -r path; do
+    rm -f "$path"
+    echo "  Pruned old local archive: $(basename "$path")"
+  done
+}
+
 # ── Publish single market ───────────────────────────────────────────
 release_market() {
   local market="$1"
@@ -179,6 +189,8 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
     cp "$archive" "$local_archive" || local_ok=false
     if $local_ok; then
       echo "  -> $local_archive"
+      # 只保留近 MAX_RELEASES 个 data-cn 归档；floor 历史基准包（data-cn-*-floor-*）永久保留
+      prune_local_archives
     else
       echo "  ERROR: local publish failed"
     fi

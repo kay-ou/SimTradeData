@@ -25,6 +25,7 @@ COS_REGION="${COS_REGION:-}"
 COS_KEY_PREFIX="${COS_KEY_PREFIX:-}"
 LOCAL_RELEASE_DIR="${LOCAL_RELEASE_DIR:-$PROJECT_ROOT/data/releases}"
 MAX_RELEASES="${MAX_RELEASES:-10}"   # 只保留近 10 个 data-cn 归档（基线 + delta），控制存储费用
+GITHUB_RELEASE_KEEP="${GITHUB_RELEASE_KEEP:-3}"  # GitHub 只保留近 N 个全量 data release，控制仓库空间
 
 # ── Parse arguments ─────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -112,6 +113,18 @@ prune_local_archives() {
     rm -f "$path"
     echo "  Pruned old local archive: $(basename "$path")"
   done
+}
+
+prune_github_releases() {
+  # 只保留近 GITHUB_RELEASE_KEEP 个 GitHub 全量 data release，控制仓库空间；
+  # lite tag（cn-lite 等）前缀不匹配不受影响；tag 为 ISO 日期后缀，字典序即时间序。
+  gh release list --json tagName --limit 100 --jq '.[].tagName' \
+    | grep "^data-${market}-" \
+    | sort -r | tail -n +"$((GITHUB_RELEASE_KEEP + 1))" \
+    | while IFS= read -r tag; do
+      echo "  Pruning old GitHub release: $tag"
+      gh release delete "$tag" --yes || true
+    done
 }
 
 # ── Publish single market ───────────────────────────────────────────
@@ -211,6 +224,7 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
     fi
     if $github_ok; then
       echo "  -> $(gh release view "$tag" --json url -q .url 2>/dev/null || echo "uploaded")"
+      prune_github_releases "$market"
     else
       echo "  ERROR: GitHub release failed"
     fi

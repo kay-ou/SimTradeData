@@ -88,6 +88,14 @@ class EfficientBaoStockDownloader:
             return next_day.strftime("%Y-%m-%d")
         return START_DATE
 
+    def _metadata_blocks_missing(self, symbol: str) -> bool:
+        """True when stock_metadata has no row for symbol or its blocks column is empty."""
+        row = self.writer.conn.execute(
+            "SELECT COUNT(*) FROM stock_metadata WHERE symbol = ? AND blocks IS NOT NULL",
+            [symbol],
+        ).fetchone()
+        return row[0] == 0
+
     def download_stock_data(
         self, symbol: str, start_date: str, end_date: str
     ) -> dict:
@@ -107,11 +115,16 @@ class EfficientBaoStockDownloader:
                 symbol, start_date, end_date
             )
 
+            is_incremental = actual_start > START_DATE
+            needs_metadata = is_incremental and self._metadata_blocks_missing(symbol)
+
             if unified_df.empty:
                 logger.warning(f"No data for {symbol}")
-                return None
-
-            split_data = self.data_splitter.split_data(unified_df)
+                if not needs_metadata:
+                    return None
+                split_data = {}
+            else:
+                split_data = self.data_splitter.split_data(unified_df)
 
             # In valuation-only mode, skip market data and related downloads
             if self.valuation_only:
@@ -156,10 +169,10 @@ class EfficientBaoStockDownloader:
             except Exception as e:
                 logger.warning(f"Failed to fetch dividend for {symbol}: {e}")
 
-            # Download basic info (skip for incremental updates)
+            # Download basic info (skip for incremental updates unless the
+            # symbol has no metadata row or its blocks column is empty)
             basic_info = {}
-            is_incremental = actual_start > START_DATE
-            if not self.skip_metadata and not is_incremental:
+            if not self.skip_metadata and (not is_incremental or needs_metadata):
                 try:
                     basic_df = self.standard_fetcher.fetch_stock_basic(symbol)
                     if not basic_df.empty:
@@ -173,9 +186,10 @@ class EfficientBaoStockDownloader:
                 except Exception as e:
                     logger.warning(f"Failed to fetch basic info for {symbol}: {e}")
 
-            # Download industry info (skip for incremental updates)
+            # Download industry info (skip for incremental updates unless
+            # the symbol's metadata is missing its blocks column)
             industry_info = {}
-            if not self.skip_metadata and not is_incremental:
+            if not self.skip_metadata and (not is_incremental or needs_metadata):
                 try:
                     industry_df = self.standard_fetcher.fetch_stock_industry(symbol)
                     if not industry_df.empty:
@@ -193,7 +207,7 @@ class EfficientBaoStockDownloader:
                 self.writer.write_valuation(symbol, valuation_data)
 
             # Only return metadata for new stocks (not incremental updates)
-            if is_incremental:
+            if is_incremental and not needs_metadata:
                 return None
 
             return {
@@ -585,6 +599,19 @@ def download_all_data(
                                 skip_stock_download = True
                         except Exception:
                             pass  # If check fails, proceed with download
+
+            # Even without new trading days, stocks missing industry blocks
+            # still need a metadata pass (legacy DBs may have none).
+            if skip_stock_download and not downloader.skip_metadata:
+                missing_blocks = downloader.writer.conn.execute(
+                    "SELECT COUNT(*) FROM stock_metadata WHERE blocks IS NULL"
+                ).fetchone()[0]
+                if missing_blocks > 0:
+                    print(
+                        f"\n{missing_blocks} stocks missing industry blocks, "
+                        "downloading metadata..."
+                    )
+                    skip_stock_download = False
 
             if skip_stock_download:
                 all_metadata = []

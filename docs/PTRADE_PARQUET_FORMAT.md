@@ -90,6 +90,9 @@ data/
 | `naps` | double | 每股净资产 | |
 | `total_shares` | double | 总股本 | 单位: 股 |
 | `a_floats` | double | 流通股 | 单位: 股 |
+| `a_shares` | double | A股股本 | 单位: 股, 日频值 |
+| `total_value` | double | 总市值 | = total_shares × close |
+| `float_value` | double | 流通市值 | 日频值优先, 否则 = a_floats × close |
 | `turnover_rate` | double | 换手率 | 百分比 |
 
 ---

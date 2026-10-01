@@ -99,6 +99,23 @@ _FUNDAMENTAL_WRITE_COLUMNS = [
 
 _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_COLUMNS)
 
+# Valuation export column list. Daily values (v.*) win over quarterly
+# fundamentals enrichment (f.*) when present; fall back to the computed
+# value otherwise.
+_VALUATION_ENRICH_SELECT = """
+    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
+    COALESCE(v.roe, f.roe) AS roe, f.roe_ttm,
+    COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
+    COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
+    COALESCE(v.total_shares, f.total_shares) AS total_shares, f.a_floats,
+    v.a_shares,
+    CASE WHEN COALESCE(v.total_shares, f.total_shares) > 0 AND s.close IS NOT NULL
+         THEN ROUND(COALESCE(v.total_shares, f.total_shares) * s.close, 2) END AS total_value,
+    COALESCE(v.float_value, CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
+         THEN ROUND(f.a_floats * s.close, 2) END) AS float_value,
+    v.turnover_rate
+"""
+
 
 class DuckDBWriter:
     """
@@ -204,10 +221,13 @@ class DuckDBWriter:
                 naps DOUBLE,
                 total_shares DOUBLE,
                 a_floats DOUBLE,
+                a_shares DOUBLE,
+                float_value DOUBLE,
                 turnover_rate DOUBLE,
                 PRIMARY KEY (symbol, date)
             )
         """)
+        self._migrate_valuation_columns()
 
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS fundamentals (
@@ -389,6 +409,21 @@ class DuckDBWriter:
         self.conn.execute("""
             INSERT OR IGNORE INTO version_info VALUES ('format', 'duckdb')
         """)
+
+    def _migrate_valuation_columns(self) -> None:
+        """Add daily valuation columns (a_shares, float_value) when upgrading DBs."""
+        columns = self.conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'valuation'
+        """).fetchall()
+        column_names = {row[0] for row in columns}
+
+        for column in ("a_shares", "float_value"):
+            if column not in column_names:
+                self.conn.execute(f"""
+                    ALTER TABLE valuation ADD COLUMN {column} DOUBLE
+                """)
+                logger.info("Added %s column to valuation", column)
 
     def _migrate_fundamentals_progress(self) -> None:
         """Migrate fundamentals_progress table to add filename and file_hash columns."""
@@ -755,15 +790,27 @@ class DuckDBWriter:
             "naps",
             "total_shares",
             "a_floats",
+            "a_shares",
+            "float_value",
             "turnover_rate",
         ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
 
         cols_str = ", ".join(available)
+        # Only overwrite the columns this source provides; daily columns
+        # (roe, roa, naps, total_shares, float_value) must survive rows
+        # written by sources that do not carry them.
+        update_cols = [c for c in available if c not in ("symbol", "date")]
+        if update_cols:
+            set_str = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
+            conflict_clause = f"ON CONFLICT (symbol, date) DO UPDATE SET {set_str}"
+        else:
+            conflict_clause = "ON CONFLICT (symbol, date) DO NOTHING"
         self.conn.execute(f"""
-            INSERT OR REPLACE INTO valuation ({cols_str})
+            INSERT INTO valuation ({cols_str})
             SELECT {cols_str} FROM df
+            {conflict_clause}
         """)
         self._record_symbol_changes("valuation", df)
 
@@ -1790,15 +1837,7 @@ class DuckDBWriter:
             SELECT
                 v.symbol,
                 v.date::TIMESTAMP_NS AS date,
-                v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
-                f.roe, f.roe_ttm, f.roa, f.roa_ttm,
-                CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END AS naps,
-                f.total_shares, f.a_floats,
-                CASE WHEN f.total_shares > 0 AND s.close IS NOT NULL
-                     THEN ROUND(f.total_shares * s.close, 2) END AS total_value,
-                CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-                     THEN ROUND(f.a_floats * s.close, 2) END AS float_value,
-                v.turnover_rate
+                {_VALUATION_ENRICH_SELECT}
             FROM valuation v
             ASOF JOIN (SELECT symbol, date, close FROM stocks) s
                 ON v.symbol = s.symbol AND v.date >= s.date
@@ -2278,15 +2317,7 @@ class DuckDBWriter:
                 SELECT
                     v.symbol,
                     v.date::TIMESTAMP_NS AS date,
-                    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
-                    f.roe, f.roe_ttm, f.roa, f.roa_ttm,
-                    CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END AS naps,
-                    f.total_shares, f.a_floats,
-                    CASE WHEN f.total_shares > 0 AND s.close IS NOT NULL
-                         THEN ROUND(f.total_shares * s.close, 2) END AS total_value,
-                    CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-                         THEN ROUND(f.a_floats * s.close, 2) END AS float_value,
-                    v.turnover_rate
+                    {_VALUATION_ENRICH_SELECT}
                 FROM valuation v
                 ASOF JOIN (SELECT symbol, date, close FROM stocks WHERE symbol IN ({symbol_list})) s
                     ON v.symbol = s.symbol AND v.date >= s.date
@@ -2683,16 +2714,7 @@ class DuckDBWriter:
             COPY (
                 SELECT
                     v.date::TIMESTAMP_NS AS date,
-                    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
-                    f.roe, f.roe_ttm, f.roa, f.roa_ttm,
-                    CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4)
-                         ELSE NULL END AS naps,
-                    f.total_shares, f.a_floats,
-                    CASE WHEN f.total_shares > 0 AND s.close IS NOT NULL
-                         THEN ROUND(f.total_shares * s.close, 2) END AS total_value,
-                    CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-                         THEN ROUND(f.a_floats * s.close, 2) END AS float_value,
-                    v.turnover_rate
+                    {_VALUATION_ENRICH_SELECT}
                 FROM valuation v
                 ASOF JOIN stocks s
                     ON v.symbol = s.symbol AND v.date >= s.date

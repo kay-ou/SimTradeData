@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -58,6 +59,103 @@ class TestWriteMoneyFlow:
             "SELECT net_main FROM money_flow WHERE symbol = '000001.SZ'"
         ).fetchone()
         assert result[0] == pytest.approx(2000.0)
+
+
+@pytest.mark.unit
+class TestValuationDailyFields:
+    """Daily valuation fields must survive other writes and win exports."""
+
+    def setup_method(self):
+        self.writer = DuckDBWriter(db_path=":memory:")
+
+    def teardown_method(self):
+        self.writer.close()
+
+    def test_write_valuation_preserves_daily_columns(self):
+        # Simulate a daily-fields writer populating valuation columns.
+        self.writer.conn.execute(
+            "INSERT INTO valuation (symbol, date, pe_ttm, pb, roe, naps, "
+            "a_shares, float_value) VALUES ('000001.SZ', DATE '2026-06-22', "
+            "10.0, 2.0, 15.0, 8.0, 900.0, 5000.0)"
+        )
+        df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "pe_ttm": [12.0],
+            "pb": [2.5],
+        })
+        self.writer.write_valuation("000001.SZ", df)
+        row = self.writer.conn.execute(
+            "SELECT pe_ttm, pb, roe, naps, a_shares, float_value "
+            "FROM valuation WHERE symbol = '000001.SZ'"
+        ).fetchone()
+        assert row[0] == pytest.approx(12.0)  # overwritten by this source
+        assert row[1] == pytest.approx(2.5)
+        assert row[2] == pytest.approx(15.0)  # daily columns survive
+        assert row[3] == pytest.approx(8.0)
+        assert row[4] == pytest.approx(900.0)
+        assert row[5] == pytest.approx(5000.0)
+
+    def test_export_prefers_daily_valuation_fields(self, tmp_path):
+        market_df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "open": [10.0],
+            "close": [10.0],
+            "high": [10.8],
+            "low": [9.9],
+            "preclose": [9.8],
+            "volume": [1000],
+            "money": [10500.0],
+        })
+        self.writer.write_market_data("000001.SZ", market_df)
+        self.writer.write_market_data("000002.SZ", market_df)
+        # 000001.SZ carries daily values for every enriched field.
+        self.writer.write_valuation("000001.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "pe_ttm": [12.0],
+            "pb": [2.0],
+            "roe": [15.0],
+            "roa": [3.0],
+            "naps": [8.0],
+            "total_shares": [1000.0],
+            "a_shares": [900.0],
+            "float_value": [5000.0],
+        }))
+        # 000002.SZ only has pe/pb: enrichment falls back to quarterly
+        # fundamentals and computed values.
+        self.writer.write_valuation("000002.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "pe_ttm": [11.0],
+            "pb": [2.2],
+        }))
+        self.writer.write_fundamentals("000002.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2026-03-31"]),
+            "publ_date": pd.to_datetime(["2026-04-20"]),
+            "roe": [9.5],
+            "total_shares": [800.0],
+            "a_floats": [400.0],
+        }))
+        _seed_benchmark(self.writer.conn)
+
+        # The metadata population step fetches the stock list from an external
+        # service; the export under test must not depend on it.
+        with patch.object(
+            DuckDBWriter, "_ensure_stock_metadata_from_pool", lambda self: None
+        ):
+            self.writer.export_to_parquet(str(tmp_path), market="cn")
+
+        row1 = pd.read_parquet(tmp_path / "valuation" / "000001.SZ.parquet").iloc[0]
+        assert row1["roe"] == pytest.approx(15.0)  # daily wins over quarterly
+        assert row1["naps"] == pytest.approx(8.0)  # real naps over close/pb
+        assert row1["total_shares"] == pytest.approx(1000.0)
+        assert row1["a_shares"] == pytest.approx(900.0)  # own column, not total_shares
+        assert row1["float_value"] == pytest.approx(5000.0)  # daily value over computed
+        assert row1["total_value"] == pytest.approx(10000.0)
+
+        row2 = pd.read_parquet(tmp_path / "valuation" / "000002.SZ.parquet").iloc[0]
+        assert row2["roe"] == pytest.approx(9.5)  # quarterly fallback
+        assert row2["naps"] == pytest.approx(round(10.0 / 2.2, 4))
+        assert row2["total_shares"] == pytest.approx(800.0)
+        assert row2["float_value"] == pytest.approx(4000.0)  # a_floats * close
 
 
 @pytest.mark.unit

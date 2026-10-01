@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- Valuation export prefers daily fields (`roe`, `roa`, `naps`, `total_shares`, `float_value`) over quarterly fundamentals enrichment when present
+- `valuation` table gains `a_shares` (A股股本) and `float_value` (流通市值) daily columns; `write_valuation` only overwrites the columns a source provides, preserving daily fields
+
 ## [1.2.1] - 2026-03-26
 
 ### Fixed

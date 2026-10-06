@@ -228,6 +228,33 @@ def _check_cn_history_floor(
         )
 
 
+def _check_stock_metadata_names(
+    conn: duckdb.DuckDBPyConnection,
+    checks: list[dict[str, Any]],
+    max_examples: int = 20,
+) -> None:
+    """Fail closed when stock names carry NUL padding or are blank after trim."""
+    if not _table_exists(conn, "stock_metadata"):
+        return
+    if "stock_name" not in _table_columns(conn, "stock_metadata"):
+        return
+    dirty = conn.execute(
+        """
+        SELECT symbol FROM stock_metadata
+        WHERE contains(stock_name, chr(0)) OR trim(stock_name) = ''
+        ORDER BY symbol
+        """
+    ).fetchall()
+    symbols = [row[0] for row in dirty]
+    _add_check(
+        checks,
+        "stock_metadata_names_clean",
+        not symbols,
+        dirty=symbols[:max_examples],
+        dirty_count=len(symbols),
+    )
+
+
 def _latest_date(
     conn: duckdb.DuckDBPyConnection,
     table: str,
@@ -647,6 +674,7 @@ def check_integrity(
 
         if market == "cn":
             _check_cn_history_floor(conn, checks)
+            _check_stock_metadata_names(conn, checks)
 
         symbols, anomaly_symbols = _stock_universe(conn, market, target_date)
         halted_symbols = _halted_symbols_on(conn, target_date) if market == "cn" else set()

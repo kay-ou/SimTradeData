@@ -115,6 +115,46 @@ def test_integrity_handles_legacy_metadata_without_security_type(tmp_path):
     assert report["valuation"]["latest_count"] == 2
 
 
+def test_integrity_fails_on_dirty_stock_names(tmp_path):
+    db_path = tmp_path / "cn.duckdb"
+    create_db(db_path)
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("ALTER TABLE stock_metadata ADD COLUMN stock_name VARCHAR")
+        conn.execute("UPDATE stock_metadata SET stock_name = '平安银行'")
+        conn.execute(
+            "UPDATE stock_metadata SET stock_name = '味知香' || chr(0) || chr(0) || ' ' "
+            "WHERE symbol = '302132.SZ'"
+        )
+    finally:
+        conn.close()
+
+    report = check_integrity(str(db_path), target_date="2026-06-24")
+
+    check = next(c for c in report["checks"] if c["name"] == "stock_metadata_names_clean")
+    assert check["status"] == "fail"
+    assert check["dirty"] == ["302132.SZ"]
+    assert check["dirty_count"] == 1
+    assert report["status"] == "fail"
+
+
+def test_integrity_passes_on_clean_stock_names(tmp_path):
+    db_path = tmp_path / "cn.duckdb"
+    create_db(db_path)
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("ALTER TABLE stock_metadata ADD COLUMN stock_name VARCHAR")
+        conn.execute("UPDATE stock_metadata SET stock_name = '平安银行'")
+    finally:
+        conn.close()
+
+    report = check_integrity(str(db_path), target_date="2026-06-24")
+
+    check = next(c for c in report["checks"] if c["name"] == "stock_metadata_names_clean")
+    assert check["status"] == "pass"
+    assert check["dirty_count"] == 0
+
+
 def test_integrity_allows_halted_active_stock_to_be_stale(tmp_path):
     db_path = tmp_path / "cn.duckdb"
     create_db(db_path)

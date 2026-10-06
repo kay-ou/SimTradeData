@@ -800,3 +800,68 @@ class TestExportDelta:
 
         assert result.returncode != 0
         assert "Database not found" in result.stderr
+
+
+class FakeStocksClient:
+    """Fake mootdx Quotes client returning NUL-padded names (TDX fixed buffer)."""
+
+    def stocks(self, market=0):
+        if market == 0:  # SZ
+            return pd.DataFrame({
+                "code": ["000001", "000002"],
+                "name": ["平安银行\x00\x00", "万 科Ａ\x00"],
+            })
+        return pd.DataFrame({"code": [], "name": []})
+
+    def index(self, **kwargs):
+        return pd.DataFrame()
+
+    def bars(self, **kwargs):
+        return pd.DataFrame()
+
+
+def _seed_metadata_db(conn):
+    conn.executemany(
+        "INSERT INTO stocks (symbol, date) VALUES (?, ?)",
+        [
+            ("000001.SZ", "2026-09-30"),
+            ("000002.SZ", "2026-09-30"),
+            ("000003.SZ", "2024-06-27"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO stock_pool VALUES (?, ?, ?)",
+        [
+            ("000001.SZ", "2020-01-01", "2026-09-30"),
+            ("000002.SZ", "2020-01-01", "2026-09-30"),
+            ("000003.SZ", "2020-01-01", "2024-06-27"),
+        ],
+    )
+    # 000001 已有 redis 同步的名字；000002 库内无行（新股场景）
+    conn.execute(
+        "INSERT INTO stock_metadata (symbol, stock_name) VALUES ('000001.SZ', '平安银行')"
+    )
+
+
+@pytest.mark.unit
+class TestEnsureStockMetadataNames:
+    def setup_method(self):
+        self.writer = DuckDBWriter(db_path=":memory:")
+        _seed_metadata_db(self.writer.conn)
+
+    def teardown_method(self):
+        self.writer.close()
+
+    def test_preserves_existing_name_and_strips_nul(self):
+        with patch("mootdx.quotes.Quotes.factory", return_value=FakeStocksClient()):
+            self.writer._ensure_stock_metadata_from_pool()
+
+        names = dict(self.writer.conn.execute(
+            "SELECT symbol, stock_name FROM stock_metadata"
+        ).fetchall())
+        # 已有名字保留（redis 权威），不被 mootdx 覆盖
+        assert names["000001.SZ"] == "平安银行"
+        # 新股票用 mootdx 名字，NUL 填充被剥离
+        assert names["000002.SZ"] == "万 科Ａ"
+        # 退市股（mootdx 列表无）名字为空，待 redis sync 填充
+        assert names.get("000003.SZ") is None

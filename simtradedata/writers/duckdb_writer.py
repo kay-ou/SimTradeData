@@ -2776,7 +2776,8 @@ class DuckDBWriter:
                         continue
                     for _, row in df.iterrows():
                         code = str(row.get("code", "")).strip()
-                        name = str(row.get("name", "")).strip()
+                        # mootdx names carry fixed-buffer NUL padding
+                        name = str(row.get("name", "")).strip("\x00").strip()
                         if not code or len(code) != 6:
                             continue
                         if market == 1 and code.startswith(("000", "399", "999")):
@@ -2878,11 +2879,18 @@ class DuckDBWriter:
         )
         self.conn.register("_stock_metadata_batch", batch_df)
         try:
+            # 已有名字保留（redis sync 填写的名字为权威），仅缺失时用 mootdx 补
             self.conn.execute(
-                "INSERT OR REPLACE INTO stock_metadata "
+                "INSERT INTO stock_metadata "
                 "(symbol, stock_name, listed_date, de_listed_date, blocks) "
                 "SELECT symbol, stock_name, listed_date, de_listed_date, blocks "
-                "FROM _stock_metadata_batch"
+                "FROM _stock_metadata_batch "
+                "ON CONFLICT (symbol) DO UPDATE SET "
+                "stock_name = COALESCE(NULLIF(stock_metadata.stock_name, ''), "
+                "excluded.stock_name), "
+                "listed_date = excluded.listed_date, "
+                "de_listed_date = excluded.de_listed_date, "
+                "blocks = excluded.blocks"
             )
         finally:
             self.conn.unregister("_stock_metadata_batch")

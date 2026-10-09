@@ -158,31 +158,27 @@ class TestValuationDailyFields:
         assert row2["float_value"] == pytest.approx(4000.0)  # a_floats * close
 
     def test_export_derives_a_floats_from_snapshot(self, tmp_path):
-        """a_floats 取客户快照隐含的逐日流通股本(float_value/preclose)，越界或缺失时回退季度值。"""
+        """a_floats = 快照 float_value / 当日收盘，使引擎现算的流通市值等于快照原值。"""
         market_df = pd.DataFrame({
             "date": pd.to_datetime(["2026-06-22"]),
             "open": [10.0], "close": [10.0], "high": [10.2], "low": [9.9],
             "preclose": [9.0], "volume": [1000], "money": [10000.0],
         })
-        for symbol in ("000001.SZ", "000002.SZ", "000003.SZ"):
+        for symbol in ("000001.SZ", "000002.SZ"):
             self.writer.write_market_data(symbol, market_df)
+            # 季度股本刻意写 400，用来证明它不再被使用
             self.writer.write_fundamentals(symbol, pd.DataFrame({
                 "date": pd.to_datetime(["2026-03-31"]),
                 "publ_date": pd.to_datetime(["2026-04-20"]),
                 "a_floats": [400.0],
             }))
-        # A: 快照隐含 9000/9.0 = 1000 股 <= 总股本 1000 -> 用反推值
+        # 有快照：9000 / close(10.0) = 900
         self.writer.write_valuation("000001.SZ", pd.DataFrame({
             "date": pd.to_datetime(["2026-06-22"]),
             "float_value": [9000.0], "total_shares": [1000.0],
         }))
-        # B: 快照隐含 90000/9.0 = 10000 股 > 总股本 1000 -> 越界，回退季度值 400
+        # 无快照：不兜底，该列留空
         self.writer.write_valuation("000002.SZ", pd.DataFrame({
-            "date": pd.to_datetime(["2026-06-22"]),
-            "float_value": [90000.0], "total_shares": [1000.0],
-        }))
-        # C: 快照缺失 -> 回退季度值 400
-        self.writer.write_valuation("000003.SZ", pd.DataFrame({
             "date": pd.to_datetime(["2026-06-22"]),
             "total_shares": [1000.0],
         }))
@@ -193,13 +189,15 @@ class TestValuationDailyFields:
         ):
             self.writer.export_to_parquet(str(tmp_path), market="cn")
 
-        got = {
-            s: pd.read_parquet(tmp_path / "valuation" / f"{s}.parquet").iloc[0]["a_floats"]
-            for s in ("000001.SZ", "000002.SZ", "000003.SZ")
-        }
-        assert got["000001.SZ"] == pytest.approx(1000.0)  # 反推值覆盖季度值
-        assert got["000002.SZ"] == pytest.approx(400.0)   # 越界 -> 季度值
-        assert got["000003.SZ"] == pytest.approx(400.0)   # 快照缺失 -> 季度值
+        row_a = pd.read_parquet(tmp_path / "valuation" / "000001.SZ.parquet").iloc[0]
+        assert row_a["a_floats"] == pytest.approx(900.0)  # 9000 / 10.0
+        assert row_a["a_floats"] != pytest.approx(400.0)  # 不再是季度股本
+        # 引擎用 close × a_floats 现算流通市值，结果必须等于快照原值
+        assert 10.0 * row_a["a_floats"] == pytest.approx(row_a["float_value"])
+
+        row_b = pd.read_parquet(tmp_path / "valuation" / "000002.SZ.parquet").iloc[0]
+        assert pd.isna(row_b["a_floats"])  # 无快照 -> NULL，不用季度股本编造
+        assert row_b["float_value"] == pytest.approx(4000.0)  # float_value 列仍走原有兜底
 
 
 @pytest.mark.unit

@@ -104,12 +104,12 @@ _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_CO
 # value otherwise.
 #
 # a_floats 例外：它不是流通股本，而是「客户快照的 float_value ÷ 当日收盘」。
-# 引擎用 close × a_floats 现算流通市值，这样算出来恰好等于客户快照的 float_value
+# 引擎用 close × a_floats 现算流通市值，这里 join 的 s.close 与引擎读的市场数据同源
+# （同一份 stocks），所以除法与乘法逐行相消，算出来恰好等于客户快照的 float_value
 # （redis 原值），全链路 redis == parquet == 打印值。用季度股本会让流通市值在财报
 # 发布日出现假台阶（实测 002226.SZ 2026-06-30 一夜 +51%）。
 # 快照缺失时该列为 NULL，不兜底——不编造平台没有的值（此时引擎会回退读 float_value 列）。
 _TOTAL_SHARES_SQL = "COALESCE(v.total_shares, f.total_shares)"
-_IMPLIED_A_FLOATS_SQL = "v.float_value / s.close"
 
 _VALUATION_ENRICH_SELECT = f"""
     v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
@@ -117,7 +117,7 @@ _VALUATION_ENRICH_SELECT = f"""
     COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
     COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
     {_TOTAL_SHARES_SQL} AS total_shares,
-    {_IMPLIED_A_FLOATS_SQL} AS a_floats,
+    v.float_value / s.close AS a_floats,
     v.a_shares,
     CASE WHEN {_TOTAL_SHARES_SQL} > 0 AND s.close IS NOT NULL
          THEN ROUND({_TOTAL_SHARES_SQL} * s.close, 2) END AS total_value,

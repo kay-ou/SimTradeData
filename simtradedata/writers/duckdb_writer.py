@@ -102,8 +102,18 @@ _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_CO
 # Valuation export column list. Daily values (v.*) win over quarterly
 # fundamentals enrichment (f.*) when present; fall back to the computed
 # value otherwise.
-_VALUATION_ENRICH_SELECT = """
-    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
+#
+# 日频列（v.*）来自客户 redis 的盘前快照：key=D 的值由 D-1 的行情算出。
+# 导出时用当日/前一日行情比例换算成 D 日收盘口径，与 ptrade get_fundamentals 一致。
+# 缺前一日行情（新股首行等）时保留原值，不产生 NULL。
+_RATIO_PRICE = "CASE WHEN sp.close > 0 AND s.close IS NOT NULL THEN s.close / sp.close END"
+_RATIO_VOLUME = "CASE WHEN sp.volume > 0 AND s.volume IS NOT NULL THEN s.volume / sp.volume END"
+
+_VALUATION_ENRICH_SELECT = f"""
+    COALESCE(ROUND(v.pe_ttm * ({_RATIO_PRICE}), 4), v.pe_ttm) AS pe_ttm,
+    COALESCE(ROUND(v.pb * ({_RATIO_PRICE}), 4), v.pb) AS pb,
+    COALESCE(ROUND(v.ps_ttm * ({_RATIO_PRICE}), 4), v.ps_ttm) AS ps_ttm,
+    COALESCE(ROUND(v.pcf * ({_RATIO_PRICE}), 4), v.pcf) AS pcf,
     COALESCE(v.roe, f.roe) AS roe, f.roe_ttm,
     COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
     COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
@@ -111,9 +121,13 @@ _VALUATION_ENRICH_SELECT = """
     v.a_shares,
     CASE WHEN COALESCE(v.total_shares, f.total_shares) > 0 AND s.close IS NOT NULL
          THEN ROUND(COALESCE(v.total_shares, f.total_shares) * s.close, 2) END AS total_value,
-    COALESCE(v.float_value, CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-         THEN ROUND(f.a_floats * s.close, 2) END) AS float_value,
-    v.turnover_rate
+    COALESCE(
+        CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
+             THEN ROUND(f.a_floats * s.close, 2) END,
+        ROUND(v.float_value * ({_RATIO_PRICE}), 2),
+        v.float_value
+    ) AS float_value,
+    COALESCE(ROUND(v.turnover_rate * ({_RATIO_VOLUME}), 4), v.turnover_rate) AS turnover_rate
 """
 
 
@@ -1839,8 +1853,10 @@ class DuckDBWriter:
                 v.date::TIMESTAMP_NS AS date,
                 {_VALUATION_ENRICH_SELECT}
             FROM valuation v
-            ASOF JOIN (SELECT symbol, date, close FROM stocks) s
+            ASOF JOIN (SELECT symbol, date, close, volume FROM stocks) s
                 ON v.symbol = s.symbol AND v.date >= s.date
+            ASOF LEFT JOIN (SELECT symbol, date, close, volume FROM stocks) sp
+                ON v.symbol = sp.symbol AND v.date > sp.date
             LEFT JOIN LATERAL (
                 SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
                 FROM fundamentals f2
@@ -2319,8 +2335,10 @@ class DuckDBWriter:
                     v.date::TIMESTAMP_NS AS date,
                     {_VALUATION_ENRICH_SELECT}
                 FROM valuation v
-                ASOF JOIN (SELECT symbol, date, close FROM stocks WHERE symbol IN ({symbol_list})) s
+                ASOF JOIN (SELECT symbol, date, close, volume FROM stocks WHERE symbol IN ({symbol_list})) s
                     ON v.symbol = s.symbol AND v.date >= s.date
+                ASOF LEFT JOIN (SELECT symbol, date, close, volume FROM stocks WHERE symbol IN ({symbol_list})) sp
+                    ON v.symbol = sp.symbol AND v.date > sp.date
                 LEFT JOIN LATERAL (
                     SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
                     FROM fundamentals f2
@@ -2718,6 +2736,8 @@ class DuckDBWriter:
                 FROM valuation v
                 ASOF JOIN stocks s
                     ON v.symbol = s.symbol AND v.date >= s.date
+                ASOF LEFT JOIN stocks sp
+                    ON v.symbol = sp.symbol AND v.date > sp.date
                 LEFT JOIN LATERAL (
                     SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
                     FROM fundamentals f2

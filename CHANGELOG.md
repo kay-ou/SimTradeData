@@ -9,8 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Valuation export prefers daily fields (`roe`, `roa`, `naps`, `total_shares`, `float_value`) over quarterly fundamentals enrichment when present
 - `valuation` table gains `a_shares` (A股股本) and `float_value` (流通市值) daily columns; `write_valuation` only overwrites the columns a source provides, preserving daily fields
-- Valuation export no longer passes the customer's pre-market (previous-close) snapshot through as the trading day's value: `pe_ttm`/`pb`/`ps_ttm`/`pcf` are scaled by `close(D)/close(D-1)` and `turnover_rate` by `volume(D)/volume(D-1)`, matching ptrade `get_fundamentals`. Rows without a prior quote keep the snapshot value
-- `float_value` is now computed as `a_floats × close(D)`, matching what the PTrade API returns at runtime; rows without `a_floats` fall back to the rescaled snapshot instead of a NULL
 
 ## [1.2.1] - 2026-03-26
 

@@ -79,10 +79,10 @@ data/
 | 字段 | 类型 | 说明 | 备注 |
 |------|------|------|------|
 | `date` | timestamp[ns] | 日期 | **主键** |
-| `pe_ttm` | double | 市盈率(TTM) | 当日收盘口径 |
-| `pb` | double | 市净率 | 当日收盘口径 |
-| `ps_ttm` | double | 市销率(TTM) | 当日收盘口径 |
-| `pcf` | double | 市现率 | 当日收盘口径 |
+| `pe_ttm` | double | 市盈率(TTM) | |
+| `pb` | double | 市净率 | |
+| `ps_ttm` | double | 市销率(TTM) | |
+| `pcf` | double | 市现率 | |
 | `roe` | double | 净资产收益率 | |
 | `roe_ttm` | double | ROE(TTM) | |
 | `roa` | double | 资产回报率 | |
@@ -92,17 +92,8 @@ data/
 | `a_floats` | double | 流通股 | 单位: 股 |
 | `a_shares` | double | A股股本 | 单位: 股, 日频值 |
 | `total_value` | double | 总市值 | = total_shares × close |
-| `float_value` | double | 流通市值 | = a_floats × close, 与 API 实时算值一致; 缺 a_floats 时用快照按当日口径换算 |
-| `turnover_rate` | double | 换手率 | 百分比, 当日成交量口径 |
-
-日频列（`pe_ttm` `pb` `ps_ttm` `pcf` `float_value` `turnover_rate`）的来源是客户
-redis 的盘前快照：`key=D` 的值由 D-1 的行情算出。导出时按
-`close(D)/close(D-1)`（换手率按 `volume(D)/volume(D-1)`）换算到 D 日收盘口径，
-与 ptrade `get_fundamentals` 的实时算值一致。缺前一日行情时（新股首行等）保留快照原值。
-
-`float_value` 例外：只要该行有 `a_floats`，就必须输出 `a_floats × close(D)`，
-因为 API 的 `get_fundamentals` 会把库里的 `float_value` 覆盖成这个实时值；
-只有 `a_floats` 缺失的行才回落到换算后的快照值（此时 API 也直接读列，两边一致）。
+| `float_value` | double | 流通市值 | 日频值优先, 否则 = a_floats × close |
+| `turnover_rate` | double | 换手率 | 百分比 |
 
 ---
 

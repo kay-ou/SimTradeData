@@ -102,15 +102,31 @@ _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_CO
 # Valuation export column list. Daily values (v.*) win over quarterly
 # fundamentals enrichment (f.*) when present; fall back to the computed
 # value otherwise.
-_VALUATION_ENRICH_SELECT = """
+#
+# a_floats 例外：客户快照的 float_value 就是「流通股 × 除权后昨收」，所以客户自己的
+# 逐日流通股本 = v.float_value / s.preclose。用它替换季度口径的 f.a_floats，是因为
+# simtradelab 用 close × a_floats 现算流通市值：季度值要等财报发布才更新，解禁/股本
+# 变动会让流通市值在报告日出现假台阶（实测 002226.SZ 2026-06-30 一夜 +51%）。
+# 物理约束 0 < 流通股本 <= 总股本；不满足或快照缺失时回退季度值。
+_TOTAL_SHARES_SQL = "COALESCE(v.total_shares, f.total_shares)"
+_IMPLIED_A_FLOATS_SQL = "v.float_value / s.preclose"
+
+_VALUATION_ENRICH_SELECT = f"""
     v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
     COALESCE(v.roe, f.roe) AS roe, f.roe_ttm,
     COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
     COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
-    COALESCE(v.total_shares, f.total_shares) AS total_shares, f.a_floats,
+    {_TOTAL_SHARES_SQL} AS total_shares,
+    COALESCE(
+        CASE WHEN s.preclose > 0 AND v.float_value > 0
+              AND {_TOTAL_SHARES_SQL} > 0
+              AND {_IMPLIED_A_FLOATS_SQL} <= {_TOTAL_SHARES_SQL}
+             THEN {_IMPLIED_A_FLOATS_SQL} END,
+        f.a_floats
+    ) AS a_floats,
     v.a_shares,
-    CASE WHEN COALESCE(v.total_shares, f.total_shares) > 0 AND s.close IS NOT NULL
-         THEN ROUND(COALESCE(v.total_shares, f.total_shares) * s.close, 2) END AS total_value,
+    CASE WHEN {_TOTAL_SHARES_SQL} > 0 AND s.close IS NOT NULL
+         THEN ROUND({_TOTAL_SHARES_SQL} * s.close, 2) END AS total_value,
     COALESCE(v.float_value, CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
          THEN ROUND(f.a_floats * s.close, 2) END) AS float_value,
     v.turnover_rate
@@ -1839,7 +1855,7 @@ class DuckDBWriter:
                 v.date::TIMESTAMP_NS AS date,
                 {_VALUATION_ENRICH_SELECT}
             FROM valuation v
-            ASOF JOIN (SELECT symbol, date, close FROM stocks) s
+            ASOF JOIN (SELECT symbol, date, close, preclose FROM stocks) s
                 ON v.symbol = s.symbol AND v.date >= s.date
             LEFT JOIN LATERAL (
                 SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
@@ -2319,7 +2335,7 @@ class DuckDBWriter:
                     v.date::TIMESTAMP_NS AS date,
                     {_VALUATION_ENRICH_SELECT}
                 FROM valuation v
-                ASOF JOIN (SELECT symbol, date, close FROM stocks WHERE symbol IN ({symbol_list})) s
+                ASOF JOIN (SELECT symbol, date, close, preclose FROM stocks WHERE symbol IN ({symbol_list})) s
                     ON v.symbol = s.symbol AND v.date >= s.date
                 LEFT JOIN LATERAL (
                     SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm

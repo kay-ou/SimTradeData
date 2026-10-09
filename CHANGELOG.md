@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Valuation export prefers daily fields (`roe`, `roa`, `naps`, `total_shares`, `float_value`) over quarterly fundamentals enrichment when present
 - `valuation` table gains `a_shares` (A股股本) and `float_value` (流通市值) daily columns; `write_valuation` only overwrites the columns a source provides, preserving daily fields
+- Valuation export derives `a_floats` from the customer snapshot (`float_value / preclose`) instead of carrying the quarterly fundamentals value forward. The engine computes market cap as `close × a_floats` at runtime, so a quarterly share count makes 流通市值 step on report days whenever a share-count change lands (observed: 002226.SZ 2026-06-30, +51% overnight). Rows violating `0 < a_floats <= total_shares`, or without a snapshot value, keep the quarterly figure
 
 ## [1.2.1] - 2026-03-26
 

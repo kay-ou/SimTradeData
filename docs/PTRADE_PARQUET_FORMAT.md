@@ -89,11 +89,17 @@ data/
 | `roa_ttm` | double | ROA(TTM) | |
 | `naps` | double | 每股净资产 | |
 | `total_shares` | double | 总股本 | 单位: 股 |
-| `a_floats` | double | 流通股 | 单位: 股 |
+| `a_floats` | double | 流通股 | 单位: 股, 日频; 见下方说明 |
 | `a_shares` | double | A股股本 | 单位: 股, 日频值 |
 | `total_value` | double | 总市值 | = total_shares × close |
 | `float_value` | double | 流通市值 | 日频值优先, 否则 = a_floats × close |
 | `turnover_rate` | double | 换手率 | 百分比 |
+
+`a_floats` 取**客户快照隐含的逐日流通股本**：客户日频值 `float_value` 就是
+「流通股 × 除权后昨收」，所以 `a_floats = float_value / preclose`。之所以不用季度
+财报口径，是因为引擎用 `close × a_floats` 现算流通市值：季度值要等财报发布才更新，
+解禁/股本变动会让流通市值在报告日出现假台阶。物理约束 `0 < a_floats <= total_shares`
+不满足、或该行没有 `float_value` 时，回退季度财报值。
 
 ---
 

@@ -907,3 +907,29 @@ class TestEnsureStockMetadataNames:
         assert names["000002.SZ"] == "万 科Ａ"
         # 退市股（mootdx 列表无）名字为空，待 redis sync 填充
         assert names.get("000003.SZ") is None
+
+    def test_zero_history_symbol_gets_listed_sentinel(self):
+        # 池内有、但 stocks 表零历史的新股：落远未来哨兵，
+        # 避免 check_integrity 门禁把空 listed_date 误判为已上市
+        self.writer.conn.execute(
+            "INSERT INTO stock_pool VALUES ('000004.SZ', '2020-01-01', '2026-09-30')"
+        )
+
+        class ClientWithNewStock(FakeStocksClient):
+            def stocks(self, market=0):
+                if market == 0:
+                    return pd.DataFrame({
+                        "code": ["000001", "000002", "000004"],
+                        "name": ["平安银行\x00\x00", "万 科Ａ\x00", "新股测试"],
+                    })
+                return pd.DataFrame({"code": [], "name": []})
+
+        with patch("mootdx.quotes.Quotes.factory", return_value=ClientWithNewStock()):
+            self.writer._ensure_stock_metadata_from_pool()
+
+        rows = dict(self.writer.conn.execute(
+            "SELECT symbol, listed_date FROM stock_metadata"
+        ).fetchall())
+        assert rows["000004.SZ"] == "2900-01-01"
+        # 有历史的股票不受影响
+        assert rows["000001.SZ"].startswith("2026-09-30")

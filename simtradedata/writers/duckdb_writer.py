@@ -2867,6 +2867,12 @@ class DuckDBWriter:
             listed_date = dates.get("listed_date")
             last_date = dates.get("last_date")
 
+            # Zero-history symbols (never listed) get the far-future sentinel:
+            # check_integrity._is_listed treats an empty listed_date as listed,
+            # which would fail the publish gate and the COS delta build.
+            if not listed_date:
+                listed_date = "2900-01-01"
+
             if symbol in active_set:
                 de_listed_date = "2900-01-01"
             elif last_date and last_date < latest_date_str:

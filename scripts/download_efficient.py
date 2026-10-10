@@ -13,6 +13,7 @@ Export to Parquet: use scripts/export_parquet.py
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -157,17 +158,20 @@ class EfficientBaoStockDownloader:
                 self.status_cache[symbol] = split_data["status"]
 
 
-            # Download dividend (ex-rights) data
-            try:
-                start_year = int(start_date[:4])
-                end_year = int(end_date[:4])
-                dividend_df = self.standard_fetcher.fetch_dividend_data_range(
-                    symbol, start_year, end_year
-                )
-                if not dividend_df.empty:
-                    self.writer.write_exrights(symbol, dividend_df)
-            except Exception as e:
-                logger.warning(f"Failed to fetch dividend for {symbol}: {e}")
+            # Download dividend (ex-rights) data. 客户 redis 权威部署跳过：
+            # exrights 由 index-sync 全量覆盖，东财写入会被次日同步抹掉且
+            # 混入无官方因子的行。
+            if os.environ.get("SIMTRADE_REDIS_AUTHORITATIVE") != "1":
+                try:
+                    start_year = int(start_date[:4])
+                    end_year = int(end_date[:4])
+                    dividend_df = self.standard_fetcher.fetch_dividend_data_range(
+                        symbol, start_year, end_year
+                    )
+                    if not dividend_df.empty:
+                        self.writer.write_exrights(symbol, dividend_df)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch dividend for {symbol}: {e}")
 
             # Download basic info (skip for incremental updates unless the
             # symbol has no metadata row or its blocks column is empty)
@@ -261,6 +265,9 @@ class EfficientBaoStockDownloader:
         - For each date, collect all symbols that are ST
         - For each date, collect all symbols that are HALT (tradestatus=0)
         """
+        # 客户 redis 权威部署：stock_status 由 index-sync 覆盖，跳过东财口径写入
+        if os.environ.get("SIMTRADE_REDIS_AUTHORITATIVE") == "1":
+            return
         if not self.status_cache:
             logger.info("No status data to aggregate")
             return
@@ -311,6 +318,9 @@ class EfficientBaoStockDownloader:
 
     def refresh_daily_stock_status(self, target_date: str) -> None:
         """Refresh target-day ST/HALT status from BaoStock's daily stock pool."""
+        # 客户 redis 权威部署：stock_status 由 index-sync 覆盖，跳过东财口径写入
+        if os.environ.get("SIMTRADE_REDIS_AUTHORITATIVE") == "1":
+            return
         from simtradedata.utils.code_utils import convert_to_ptrade_code
 
         rs = bs.query_all_stock(day=target_date)

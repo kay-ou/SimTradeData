@@ -147,7 +147,8 @@ class TestValuationDailyFields:
         assert row1["roe"] == pytest.approx(15.0)  # daily wins over quarterly
         assert row1["naps"] == pytest.approx(8.0)  # real naps over close/pb
         assert row1["total_shares"] == pytest.approx(1000.0)
-        assert row1["a_shares"] == pytest.approx(900.0)  # own column, not total_shares
+        # a_shares 客户侧已停供：导出置 NULL 对齐平台，旧口径冻结值会误导策略
+        assert pd.isna(row1["a_shares"])
         assert row1["float_value"] == pytest.approx(5000.0)  # daily value over computed
         assert row1["total_value"] == pytest.approx(10000.0)
 
@@ -156,6 +157,32 @@ class TestValuationDailyFields:
         assert row2["naps"] == pytest.approx(round(10.0 / 2.2, 4))
         assert row2["total_shares"] == pytest.approx(800.0)
         assert row2["float_value"] == pytest.approx(4000.0)  # a_floats * close
+
+    def test_export_prefers_direct_a_floats_over_derived(self, tmp_path):
+        """redis 直供 a_floats（平台流通股本）优先于 float_value/close 派生。"""
+        market_df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "open": [10.0], "close": [10.0], "high": [10.2], "low": [9.9],
+            "preclose": [9.0], "volume": [1000], "money": [10000.0],
+        })
+        self.writer.write_market_data("000001.SZ", market_df)
+        # 直供 55.0，派生值是 9000/10 = 900：直供必须赢
+        self.writer.write_valuation("000001.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "a_floats": [55.0],
+            "float_value": [9000.0],
+            "total_shares": [1000.0],
+        }))
+        _seed_benchmark(self.writer.conn)
+
+        with patch.object(
+            DuckDBWriter, "_ensure_stock_metadata_from_pool", lambda self: None
+        ):
+            self.writer.export_to_parquet(str(tmp_path), market="cn")
+
+        row = pd.read_parquet(tmp_path / "valuation" / "000001.SZ.parquet").iloc[0]
+        assert row["a_floats"] == pytest.approx(55.0)
+        assert row["float_value"] == pytest.approx(9000.0)
 
     def test_export_derives_a_floats_from_snapshot(self, tmp_path):
         """a_floats = 快照 float_value / 当日收盘，使引擎现算的流通市值等于快照原值。"""

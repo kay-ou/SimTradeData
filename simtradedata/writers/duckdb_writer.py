@@ -9,6 +9,7 @@ with automatic upsert (INSERT OR REPLACE) for deduplication.
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -103,12 +104,11 @@ _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_CO
 # fundamentals enrichment (f.*) when present; fall back to the computed
 # value otherwise.
 #
-# a_floats 例外：它不是流通股本，而是「客户快照的 float_value ÷ 当日收盘」。
-# 引擎用 close × a_floats 现算流通市值，这里 join 的 s.close 与引擎读的市场数据同源
-# （同一份 stocks），所以除法与乘法逐行相消，算出来恰好等于客户快照的 float_value
-# （redis 原值），全链路 redis == parquet == 打印值。用季度股本会让流通市值在财报
-# 发布日出现假台阶（实测 002226.SZ 2026-06-30 一夜 +51%）。
-# 快照缺失时该列为 NULL，不兜底——不编造平台没有的值（此时引擎会回退读 float_value 列）。
+# a_floats：客户侧 2026-10 起直接提供平台流通股本（redis a_floats），优先用它；
+# 旧部署没有该列数据时退回「float_value ÷ 当日收盘」派生（引擎用 close × a_floats
+# 现算流通市值，join 的 s.close 与引擎读的市场数据同源，除法与乘法逐行相消）。
+# a_shares：客户侧已停供，导出置 NULL 对齐平台行为（get_fundamentals('a_shares')
+# 返回 NaN），旧口径冻结值会误导策略。
 _TOTAL_SHARES_SQL = "COALESCE(v.total_shares, f.total_shares)"
 
 _VALUATION_ENRICH_SELECT = f"""
@@ -117,14 +117,47 @@ _VALUATION_ENRICH_SELECT = f"""
     COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
     COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
     {_TOTAL_SHARES_SQL} AS total_shares,
-    v.float_value / s.close AS a_floats,
-    v.a_shares,
+    COALESCE(v.a_floats, v.float_value / s.close) AS a_floats,
+    NULL::DOUBLE AS a_shares,
     CASE WHEN {_TOTAL_SHARES_SQL} > 0 AND s.close IS NOT NULL
          THEN ROUND({_TOTAL_SHARES_SQL} * s.close, 2) END AS total_value,
     COALESCE(v.float_value, CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
          THEN ROUND(f.a_floats * s.close, 2) END) AS float_value,
     v.turnover_rate
 """
+
+
+def _fill_exer_factors(df) -> None:
+    """Fill exer_forward_a/b columns on an exrights frame.
+
+    官方因子（客户 redis 同步落库）优先，全行非空即透传；缺列或任一行为
+    NULL 时按 ps 字段自算兜底。因子是累积序列，不能按行混源，所以
+    整只股票要么全官方、要么全自算。
+    """
+    if (
+        "exer_forward_a" in df.columns
+        and "exer_forward_b" in df.columns
+        and df["exer_forward_a"].notna().all()
+        and df["exer_forward_b"].notna().all()
+    ):
+        return
+    import numpy as np
+
+    n = len(df)
+    allotted = df["allotted_ps"].values
+    bonus = df["bonus_ps"].values
+    rationed = df["rationed_ps"].values
+    rationed_px = df["rationed_px"].values
+
+    fa = np.ones(n + 1, dtype="float64")
+    fb = np.zeros(n + 1, dtype="float64")
+    for i in range(n - 1, -1, -1):
+        m = 1.0 + allotted[i] + rationed[i]
+        fa[i] = fa[i + 1] / m
+        fb[i] = fa[i + 1] * (-bonus[i] + rationed[i] * rationed_px[i]) / m + fb[i + 1]
+
+    df["exer_forward_a"] = fa[:n]
+    df["exer_forward_b"] = fb[:n]
 
 
 class DuckDBWriter:
@@ -212,6 +245,10 @@ class DuckDBWriter:
                 rationed_px DOUBLE DEFAULT 0,
                 bonus_ps DOUBLE DEFAULT 0,
                 dividend DOUBLE,
+                exer_forward_a DOUBLE,
+                exer_forward_b DOUBLE,
+                exer_backward_a DOUBLE,
+                exer_backward_b DOUBLE,
                 PRIMARY KEY (symbol, date)
             )
         """)
@@ -238,6 +275,7 @@ class DuckDBWriter:
             )
         """)
         self._migrate_valuation_columns()
+        self._migrate_exrights_columns()
 
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS fundamentals (
@@ -434,6 +472,26 @@ class DuckDBWriter:
                     ALTER TABLE valuation ADD COLUMN {column} DOUBLE
                 """)
                 logger.info("Added %s column to valuation", column)
+
+    def _migrate_exrights_columns(self) -> None:
+        """Add official ex-rights factor columns when upgrading DBs.
+
+        Filled by the customer index-sync (redis 权威源); NULL elsewhere and
+        the export falls back to computing factors from the ps columns.
+        """
+        columns = self.conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'exrights'
+        """).fetchall()
+        column_names = {row[0] for row in columns}
+
+        for column in ("exer_forward_a", "exer_forward_b",
+                       "exer_backward_a", "exer_backward_b"):
+            if column not in column_names:
+                self.conn.execute(f"""
+                    ALTER TABLE exrights ADD COLUMN {column} DOUBLE
+                """)
+                logger.info("Added %s column to exrights", column)
 
     def _migrate_fundamentals_progress(self) -> None:
         """Migrate fundamentals_progress table to add filename and file_hash columns."""
@@ -1874,7 +1932,6 @@ class DuckDBWriter:
         target_version: str,
         market: str = "cn",
     ) -> tuple[int, list[str]]:
-        import numpy as np
 
         cn_filter = f"AND {self._cn_stock_filter_sql('exrights.symbol')}" if market == "cn" else ""
         symbols = [r[0] for r in self.conn.execute(f"""
@@ -1905,7 +1962,8 @@ class DuckDBWriter:
         symbols_sql = ", ".join("'" + symbol.replace("'", "''") + "'" for symbol in symbols)
         df_all = self.conn.execute(f"""
             SELECT symbol, date::TIMESTAMP_NS AS date,
-                   allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend
+                   allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend,
+                   exer_forward_a, exer_forward_b, exer_backward_a, exer_backward_b
             FROM exrights
             WHERE symbol IN ({symbols_sql}) {cn_filter}
             ORDER BY symbol, date
@@ -1917,21 +1975,7 @@ class DuckDBWriter:
         written_symbols = []
         for symbol, group in df_all.groupby("symbol", sort=True):
             group = group.reset_index(drop=True)
-            n = len(group)
-            allotted = group["allotted_ps"].values
-            bonus = group["bonus_ps"].values
-            rationed = group["rationed_ps"].values
-            rationed_px = group["rationed_px"].values
-
-            fa = np.ones(n + 1, dtype="float64")
-            fb = np.zeros(n + 1, dtype="float64")
-            for i in range(n - 1, -1, -1):
-                m = 1.0 + allotted[i] + rationed[i]
-                fa[i] = fa[i + 1] / m
-                fb[i] = fa[i + 1] * (-bonus[i] + rationed[i] * rationed_px[i]) / m + fb[i + 1]
-
-            group["exer_forward_a"] = fa[:n]
-            group["exer_forward_b"] = fb[:n]
+            _fill_exer_factors(group)
             has_delta = (
                 (group["date"] > base_ts) & (group["date"] <= target_ts)
             ).any()
@@ -2165,9 +2209,7 @@ class DuckDBWriter:
         logger.info(f"Exported {len(symbols)} {table} files")
 
     def _export_exrights_with_factors(self, symbol_escaped: str, output_file: Path) -> None:
-        """Export exrights with computed exer_forward_a/b factors"""
-        import numpy as np
-
+        """Export exrights with exer_forward_a/b factors (官方优先, 缺则自算)"""
         df = self.conn.execute(f"""
             SELECT * EXCLUDE (symbol) REPLACE (date::TIMESTAMP_NS AS date)
             FROM exrights WHERE symbol = '{symbol_escaped}' ORDER BY date
@@ -2177,34 +2219,13 @@ class DuckDBWriter:
             df.to_parquet(str(output_file), index=False)
             return
 
-        n = len(df)
-        allotted = df["allotted_ps"].values
-        bonus = df["bonus_ps"].values
-        rationed = df["rationed_ps"].values
-        rationed_px = df["rationed_px"].values
-
-        # Backward accumulation of forward-adjustment factors.
-        # Continuity at each ex-date requires:
-        #   fa[i] * P_raw + fb[i] = fa[i+1] * P_ex + fb[i+1]
-        # where P_ex = (P_raw - bonus + rat*rat_px) / m, giving:
-        #   fa[i] = fa[i+1] / m
-        #   fb[i] = fa[i+1] * (-bonus + rat*rat_px) / m + fb[i+1]
-        fa = np.ones(n + 1, dtype="float64")
-        fb = np.zeros(n + 1, dtype="float64")
-        for i in range(n - 1, -1, -1):
-            m = 1.0 + allotted[i] + rationed[i]
-            fa[i] = fa[i + 1] / m
-            fb[i] = fa[i + 1] * (-bonus[i] + rationed[i] * rationed_px[i]) / m + fb[i + 1]
-
-        df["exer_forward_a"] = fa[:n]
-        df["exer_forward_b"] = fb[:n]
+        _fill_exer_factors(df)
 
         df.to_parquet(str(output_file), index=False, compression="zstd")
 
     def _export_exrights_batch(self, output_dir: Path, market: str = "cn") -> None:
         """Export all exrights with pre-computed forward adj factors (batch)."""
         import time
-        import numpy as np
         t0 = time.time()
 
         market_filter = (
@@ -2214,7 +2235,8 @@ class DuckDBWriter:
         )
         df_all = self.conn.execute(f"""
             SELECT e.symbol, e.date::TIMESTAMP_NS AS date,
-                   allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend
+                   allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend,
+                   exer_forward_a, exer_forward_b, exer_backward_a, exer_backward_b
             FROM exrights e
             {market_filter}
             ORDER BY e.symbol, e.date
@@ -2227,21 +2249,7 @@ class DuckDBWriter:
         count = 0
         for symbol, group in df_all.groupby("symbol"):
             df = group.drop(columns=["symbol"]).reset_index(drop=True)
-            n = len(df)
-            allotted = df["allotted_ps"].values
-            bonus = df["bonus_ps"].values
-            rationed = df["rationed_ps"].values
-            rationed_px = df["rationed_px"].values
-
-            fa = np.ones(n + 1, dtype="float64")
-            fb = np.zeros(n + 1, dtype="float64")
-            for i in range(n - 1, -1, -1):
-                m = 1.0 + allotted[i] + rationed[i]
-                fa[i] = fa[i + 1] / m
-                fb[i] = fa[i + 1] * (-bonus[i] + rationed[i] * rationed_px[i]) / m + fb[i + 1]
-
-            df["exer_forward_a"] = fa[:n]
-            df["exer_forward_b"] = fb[:n]
+            _fill_exer_factors(df)
             df.to_parquet(str(output_dir / f"{symbol}.parquet"), index=False, compression="zstd")
             count += 1
 
@@ -2923,6 +2931,10 @@ class DuckDBWriter:
         their lifespan) as HALT. Merges with any existing BaoStock-sourced
         HALT data already in the stock_status table.
         """
+        # 客户 redis 权威部署（SIMTRADE_REDIS_AUTHORITATIVE=1）：stock_status 由
+        # index-sync 从客户 redis 覆盖，volume=0 并集会污染平台真实停牌口径。
+        if os.environ.get("SIMTRADE_REDIS_AUTHORITATIVE") == "1":
+            return
         import time
         t0 = time.time()
 

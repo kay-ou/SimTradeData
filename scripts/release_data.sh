@@ -98,6 +98,11 @@ delta_is_publishable() {
 delta_versions_are_valid() {
   run_cos_python -c 'import datetime as d, json, sys
 manifest = json.load(sys.stdin)
+# busy/fallback/up_to_date 的 manifest 无有效 to_version，交由
+# delta_is_publishable 判定（返回 2 -> 继续走基线上传），不再把
+# 发布链卡死在这里（2026-10-10 锁冲突 busy manifest 曾致 COS 发布全失败）。
+if manifest.get("pipeline_busy") or manifest.get("fallback_to_baseline") or manifest.get("up_to_date"):
+    raise SystemExit(0)
 base_value = manifest["from_version"]
 target_value = manifest["to_version"]
 base = d.date.fromisoformat(base_value)

@@ -241,8 +241,6 @@ def export_api_delta(
 
             start = last_sync.isoformat()
             end = latest.isoformat()
-            start_key = start.replace("-", "")
-            end_key = end.replace("-", "")
 
             tables = [
                 _copy_table(
@@ -269,10 +267,11 @@ def export_api_delta(
                     conn,
                     table="stock_status",
                     sql=(
-                        # DB 中 symbols 存的是 JSON 字符串，导出为 list 与全量包格式对齐
+                        # DB 中 symbols 存的是 JSON 字符串，导出为 list 与全量包格式对齐。
+                        # 全量导出：客户 redis 权威部署会重写历史状态，窗口增量到不了
+                        # 客户端；全表 zstd 约 1.7MB，随 delta 重发可接受。
                         "SELECT date, status_type, symbols::JSON::VARCHAR[] AS symbols "
                         "FROM stock_status "
-                        f"WHERE date > '{start_key}' AND date <= '{end_key}' "
                         "ORDER BY date, status_type"
                     ),
                     output_dir=package_dir,

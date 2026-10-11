@@ -2027,6 +2027,7 @@ class DuckDBWriter:
                 base_version,
                 target_version,
                 "date, status_type, symbols::JSON::VARCHAR[] AS symbols",
+                full=True,
             )
             if status_rows:
                 changed_tables.append({"table": "stock_status", "rows": status_rows})
@@ -2107,7 +2108,22 @@ class DuckDBWriter:
         base_version: str,
         target_version: str,
         select_columns: str,
+        full: bool = False,
     ) -> int:
+        # full=True：全量导出（stock_status 用）。客户 redis 权威部署会重写
+        # 历史状态（ST/HALT/DELISTING），窗口增量到不了客户端，全量 1.7MB
+        # 随 delta 重发可接受。
+        if full:
+            rows = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if rows:
+                self.conn.execute(f"""
+                    COPY (
+                        SELECT {select_columns}
+                        FROM {table}
+                        ORDER BY date
+                    ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
+                """)
+            return rows
         date_expr = "STRPTIME(date, '%Y%m%d')::DATE"
         rows = self.conn.execute(f"""
             SELECT COUNT(*) FROM {table}

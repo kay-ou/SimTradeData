@@ -278,6 +278,26 @@ def export_api_delta(
                 ),
                 _copy_table(
                     conn,
+                    table="exrights",
+                    sql=(
+                        # 按 data_change_log 标记的 symbol 全量导出（长表），客户端
+                        # 覆盖对应 per-symbol 文件。客户 redis 权威部署每天全量标记，
+                        # 其他部署按东财新事件增量标记。
+                        "SELECT e.symbol, e.date::TIMESTAMP_NS AS date, "
+                        "allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend, "
+                        "exer_forward_a, exer_forward_b, exer_backward_a, exer_backward_b "
+                        "FROM exrights e "
+                        "WHERE e.symbol IN ("
+                        "  SELECT symbol FROM data_change_log "
+                        "  WHERE table_name = 'exrights' AND symbol IS NOT NULL "
+                        f"    AND (date > DATE '{start}' OR changed_at::DATE > DATE '{start}')"
+                        ") "
+                        "ORDER BY e.symbol, e.date"
+                    ),
+                    output_dir=package_dir,
+                ),
+                _copy_table(
+                    conn,
                     table="stock_metadata",
                     sql="SELECT * FROM stock_metadata ORDER BY symbol",
                     output_dir=package_dir,
@@ -295,6 +315,7 @@ def export_api_delta(
                     "valuation.parquet",
                     "stock_status.parquet",
                     "stock_metadata.parquet",
+                    "exrights.parquet",
                 ],
             )
 

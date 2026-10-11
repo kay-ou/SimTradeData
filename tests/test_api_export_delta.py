@@ -36,6 +36,19 @@ def _seed_delta_db(db_path: Path) -> None:
         writer.write_valuation("000001.SZ", valuation_df)
         writer.write_valuation("600000.SS", valuation_df)
         writer.write_stock_status("20260626", "HALT", ["000001.SZ"])
+        writer.write_exrights("000001.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "allotted_ps": [0.0],
+            "rationed_ps": [0.0],
+            "rationed_px": [0.0],
+            "bonus_ps": [0.1],
+            "dividend": [0.2],
+        }))
+        # 官方因子列由客户 redis 同步写入（write_exrights 白名单不含它们）
+        writer.conn.execute(
+            "UPDATE exrights SET exer_forward_a = 0.9, exer_forward_b = -0.05, "
+            "exer_backward_a = 1.1, exer_backward_b = 0.15 WHERE symbol = '000001.SZ'"
+        )
         writer.write_stock_metadata(pd.DataFrame({
             "symbol": ["000001.SZ", "600000.SS"],
             "stock_name": ["Ping An Bank", "Shanghai Bank"],
@@ -253,9 +266,11 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
             "valuation.parquet",
             "stock_status.parquet",
             "stock_metadata.parquet",
+            "exrights.parquet",
         }
         manifest = json.load(tar.extractfile("manifest.json"))
         tar.extract("stock_status.parquet", unpacked, filter="data")
+        tar.extract("exrights.parquet", unpacked, filter="data")
 
     assert manifest["package_format"] == "simtradedata_api_delta_v1"
     assert manifest["market"] == "cn"
@@ -268,6 +283,7 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
         "valuation",
         "stock_status",
         "stock_metadata",
+        "exrights",
     }
     assert all(item["sha256"] for item in manifest["tables"])
 
@@ -276,6 +292,20 @@ def test_api_delta_exports_table_level_tarball(tmp_path):
     ).fetchone()
     assert symbols_type == "VARCHAR[]"
     assert symbols == ["000001.SZ"]
+
+    # exrights 长表：change_log 标记的 symbol 全量行，含官方复权因子
+    exr = pd.read_parquet(unpacked / "exrights.parquet")
+    assert list(exr.columns) == [
+        "symbol", "date", "allotted_ps", "rationed_ps", "rationed_px",
+        "bonus_ps", "dividend", "exer_forward_a", "exer_forward_b",
+        "exer_backward_a", "exer_backward_b",
+    ], exr.columns
+    assert len(exr) == 1
+    row = exr.iloc[0]
+    assert row["symbol"] == "000001.SZ"
+    assert row["exer_forward_a"] == 0.9
+    assert row["exer_forward_b"] == -0.05
+    assert row["dividend"] == 0.2
 
 
 def test_api_delta_returns_empty_manifest_when_up_to_date(tmp_path):
@@ -324,6 +354,7 @@ def test_api_delta_ignores_future_listings_when_selecting_complete_date(tmp_path
             "valuation.parquet",
             "stock_status.parquet",
             "stock_metadata.parquet",
+            "exrights.parquet",
         }
         manifest = json.load(tar.extractfile("manifest.json"))
 
@@ -364,6 +395,7 @@ def test_api_delta_ignores_excluded_cn_symbols_when_selecting_complete_date(tmp_
             "valuation.parquet",
             "stock_status.parquet",
             "stock_metadata.parquet",
+            "exrights.parquet",
         }
         manifest = json.load(tar.extractfile("manifest.json"))
 

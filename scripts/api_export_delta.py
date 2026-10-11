@@ -241,6 +241,10 @@ def export_api_delta(
 
             start = last_sync.isoformat()
             end = latest.isoformat()
+            # 拼进 SQL 前显式断言类型：last_sync 经 _parse_date(date.fromisoformat)
+            # 校验，latest 来自 duckdb DATE 列，两者都必须是 dt.date，isoformat()
+            # 输出才必然无注入面（_copy_table 不支持参数化）。
+            assert isinstance(last_sync, dt.date) and isinstance(latest, dt.date)
 
             tables = [
                 _copy_table(

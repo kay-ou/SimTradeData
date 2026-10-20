@@ -455,6 +455,44 @@ class TdxDayImporter:
         self.writer.close()
 
 
+def import_benchmark_indices(
+    zip_path: Path, importer: TdxDayImporter
+) -> set[str]:
+    """Import the benchmark index .day files from hsjday.zip.
+
+    The stock importer skips index files (is_stock_code), so the daily
+    pipeline and the repair job both use this to fill the stocks-table
+    index rows and the benchmark table.
+
+    Raises ValueError when a configured index file is missing from the zip.
+    """
+    from simtradedata.config.field_mappings import BENCHMARK_CONFIG
+
+    wanted = {
+        BENCHMARK_CONFIG["default_index"],
+        *BENCHMARK_CONFIG["alternatives"],
+    }
+    default_index = BENCHMARK_CONFIG["default_index"]
+    imported: set[str] = set()
+
+    for filename, data in iter_day_files_from_zip(zip_path, wanted=wanted):
+        code = filename_to_ptrade_code(filename)
+        df = parse_tdx_day_file(data)
+        if df.empty:
+            logger.warning("No records in %s", filename)
+            continue
+        importer.import_stock(code, df)
+        if code == default_index:
+            importer.writer.write_benchmark(df)
+        imported.add(code)
+        logger.info("Imported %s: %d rows", code, len(df))
+
+    missing = wanted - imported
+    if missing:
+        raise ValueError(f"Index files missing from zip: {sorted(missing)}")
+    return imported
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Import TDX daily data from ZIP or directory",

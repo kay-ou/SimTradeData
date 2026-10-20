@@ -24,14 +24,8 @@ from scripts.download_tdx_day import (
     needs_update,
     get_remote_file_info,
 )
-from scripts.import_tdx_day import (
-    TdxDayImporter,
-    filename_to_ptrade_code,
-    iter_day_files_from_zip,
-    parse_tdx_day_file,
-)
+from scripts.import_tdx_day import TdxDayImporter, import_benchmark_indices
 from simtradedata.config.field_mappings import (
-    BENCHMARK_CONFIG,
     BENCHMARK_HISTORY_FLOOR,
     benchmark_history_ok,
 )
@@ -74,32 +68,12 @@ def main() -> int:
             logger.error("Zip not found: %s (use --file or drop --skip-download)", zip_path)
             return 1
 
-        indices = [
-            BENCHMARK_CONFIG["default_index"],
-            *BENCHMARK_CONFIG["alternatives"],
-        ]
-        wanted = set(indices)
-
         importer = TdxDayImporter(db_path=args.db)
-        default_index = BENCHMARK_CONFIG["default_index"]
-        imported: dict[str, int] = {}
-
         try:
-            for filename, data in iter_day_files_from_zip(zip_path, wanted=wanted):
-                code = filename_to_ptrade_code(filename)
-                df = parse_tdx_day_file(data)
-                if df.empty:
-                    logger.warning("No records in %s", filename)
-                    continue
-                importer.import_stock(code, df)
-                if code == default_index:
-                    importer.writer.write_benchmark(df)
-                imported[code] = len(df)
-                logger.info("Imported %s: %d rows", code, len(df))
-
-            missing = wanted - set(imported)
-            if missing:
-                logger.error("Index files missing from zip: %s", sorted(missing))
+            try:
+                import_benchmark_indices(zip_path, importer)
+            except ValueError as e:
+                logger.error("%s", e)
                 return 1
 
             # Verify the benchmark table now covers the required history floor

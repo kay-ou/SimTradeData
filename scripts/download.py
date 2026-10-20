@@ -156,6 +156,16 @@ def run_tdx_download_and_import(db_path: str = DEFAULT_DB_PATH) -> bool:
             stats = importer.import_from_source(zip_path)
             print(f"  Files processed: {stats['files_processed']}")
             print(f"  Records imported: {stats['records_imported']}")
+
+            # Benchmark indices (skipped by the stock importer). Missing
+            # index files only warn: stock data is already imported and the
+            # benchmark history floor has its own integrity gate.
+            from import_tdx_day import import_benchmark_indices
+            try:
+                imported = import_benchmark_indices(zip_path, importer)
+                print(f"  Benchmark indices imported: {sorted(imported)}")
+            except ValueError as e:
+                print(f"  WARNING: benchmark index import skipped: {e}")
             return True
         finally:
             importer.close()

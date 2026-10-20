@@ -1365,34 +1365,46 @@ class DuckDBWriter:
         """Export all data to PTrade Parquet format"""
         output_path = Path(output_dir)
 
-        # Compute derived fields before export
-        self.compute_derived_fundamentals()
+        # Guardrail: cap DuckDB memory so oversized queries spill to disk
+        # instead of exhausting the host (the 7GB customer box crashed twice
+        # on the old all-at-once gap-fill materialization).
+        self.conn.execute("SET memory_limit='2.5GB'")
+        temp_dir = self.db_path.parent / "tmp_duckdb"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        self.conn.execute(f"SET temp_directory='{temp_dir}'")
 
-        # Clean output directory to avoid mixing data from different markets
-        if output_path.exists():
-            safe_rmtree(output_path)
+        try:
+            # Compute derived fields before export
+            self.compute_derived_fundamentals()
 
-        for subdir in ["stocks", "exrights", "fundamentals", "valuation", "metadata"]:
-            (output_path / subdir).mkdir(parents=True, exist_ok=True)
+            # Clean output directory to avoid mixing data from different markets
+            if output_path.exists():
+                safe_rmtree(output_path)
 
-        logger.info("Exporting stocks...")
-        self._export_stocks_batch(output_path / "stocks", market=market)
+            for subdir in ["stocks", "exrights", "fundamentals", "valuation", "metadata"]:
+                (output_path / subdir).mkdir(parents=True, exist_ok=True)
 
-        logger.info("Exporting exrights...")
-        self._export_exrights_batch(output_path / "exrights", market=market)
+            logger.info("Exporting stocks...")
+            self._export_stocks_batch(output_path / "stocks", market=market)
 
-        logger.info("Exporting fundamentals...")
-        self._export_fundamentals_batch(output_path / "fundamentals", market=market)
+            logger.info("Exporting exrights...")
+            self._export_exrights_batch(output_path / "exrights", market=market)
 
-        logger.info("Exporting valuation...")
-        self._export_valuation_batch(output_path / "valuation", market=market)
+            logger.info("Exporting fundamentals...")
+            self._export_fundamentals_batch(output_path / "fundamentals", market=market)
 
-        logger.info("Exporting metadata...")
-        self._export_metadata(output_path / "metadata", market=market)
+            logger.info("Exporting valuation...")
+            self._export_valuation_batch(output_path / "valuation", market=market)
 
-        self._write_manifest(output_path, market=market)
+            logger.info("Exporting metadata...")
+            self._export_metadata(output_path / "metadata", market=market)
 
-        logger.info(f"Export complete: {output_path}")
+            self._write_manifest(output_path, market=market)
+
+            logger.info(f"Export complete: {output_path}")
+        finally:
+            self.conn.execute("RESET memory_limit")
+            self.conn.execute("RESET temp_directory")
 
     def export_delta(
         self,
@@ -2384,160 +2396,173 @@ class DuckDBWriter:
     def _export_stocks_batch(self, output_dir: Path, market: str = "cn") -> None:
         """Export all stocks with gap-filling and price limits (batch optimized).
 
-        Pre-computes gap-filled data for ALL stocks in one query,
-        then writes per-symbol parquet files with a simple filter.
+        Gap-fill is materialized in symbol batches to bound peak memory;
+        materializing all ~7600 x ~5200 rows at once exhausted the 7GB
+        customer box (two full-host crashes).
         """
         import time
         t0 = time.time()
 
-        # Step 1: Build gap-filled table for all stocks at once
-        cn_filter = (
+        market_filter = (
             f"WHERE {self._cn_stock_filter_sql('s0.symbol')}"
             if market == "cn" else ""
         )
-        logger.info("  Pre-computing gap-filled data for all stocks...")
-        self.conn.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _stocks_filled AS
-            WITH trade_cal AS (
-                SELECT DISTINCT date FROM stocks
-                UNION
-                SELECT date FROM trade_days
-            ),
-            lifespans AS (
-                SELECT s0.symbol, MIN(s0.date) AS first_date, MAX(s0.date) AS last_date
-                FROM stocks s0 {cn_filter} GROUP BY s0.symbol
-            ),
-            joined AS (
-                SELECT
-                    ls.symbol,
-                    tc.date,
-                    -- NULL out OHLC when volume=0 (suspended).
-                    -- This prevents mootdx's ex-rights adjusted prices
-                    -- from replacing the last traded price during suspension.
-                    CASE WHEN s.volume > 0 THEN s.open END AS open,
-                    CASE WHEN s.volume > 0 THEN s.close END AS close,
-                    CASE WHEN s.volume > 0 THEN s.high END AS high,
-                    CASE WHEN s.volume > 0 THEN s.low END AS low,
-                    -- Keep preclose only on trading days; during suspension
-                    -- it will be recomputed as LAG(close) in the final step.
-                    CASE WHEN s.volume > 0 THEN s.preclose END AS preclose,
-                    COALESCE(s.volume, 0) AS volume,
-                    COALESCE(s.money, 0.0) AS money
-                FROM lifespans ls
-                CROSS JOIN trade_cal tc
-                LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = tc.date
-                WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
-            ),
-            gap_filled AS (
-                SELECT
-                    symbol, date,
-                    COALESCE(open, last_value(close IGNORE NULLS) OVER w) AS open,
-                    COALESCE(close, last_value(close IGNORE NULLS) OVER w) AS close,
-                    COALESCE(high, last_value(close IGNORE NULLS) OVER w) AS high,
-                    COALESCE(low, last_value(close IGNORE NULLS) OVER w) AS low,
-                    preclose, volume, money
-                FROM joined
-                WINDOW w AS (PARTITION BY symbol ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-            ),
-            with_lag AS (
-                SELECT
-                    symbol, date,
-                    open, close, high, low,
-                    LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS lag_close,
-                    -- Use last ACTIVE trading date (not gap-filled date) for exrights range check.
-                    -- During suspension, lag_date would be yesterday (gap-filled),
-                    -- but we need the last real trading day to catch exrights events
-                    -- that occurred during the suspension period.
-                    last_value(CASE WHEN volume > 0 THEN date END IGNORE NULLS) OVER (
-                        PARTITION BY symbol ORDER BY date
-                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-                    ) AS last_active_date,
-                    preclose AS stored_preclose,
-                    volume, money
-                FROM gap_filled
-            ),
-            adj AS (
-                SELECT
-                    wl.symbol, wl.date,
-                    SUM(COALESCE(ex.bonus_ps, 0)
-                        - COALESCE(ex.rationed_px, 0) * COALESCE(ex.rationed_ps, 0)
-                    ) AS total_deduction,
-                    EXP(SUM(LN(
-                        1 + COALESCE(ex.allotted_ps, 0) + COALESCE(ex.rationed_ps, 0)
-                    ))) AS total_divisor,
-                    COUNT(ex.date) AS event_count
-                FROM with_lag wl
-                INNER JOIN exrights ex ON ex.symbol = wl.symbol
-                    AND ex.date > wl.last_active_date AND ex.date <= wl.date
-                GROUP BY wl.symbol, wl.date
-            )
-            SELECT
-                wl.symbol,
-                wl.date::TIMESTAMP_NS AS date,
-                wl.open, wl.close, wl.high, wl.low,
-                CASE
-                    WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
-                         AND wl.volume > 0 THEN
-                        ROUND(
-                            (wl.lag_close - adj.total_deduction)
-                            / adj.total_divisor,
-                            2)
-                    ELSE COALESCE(wl.lag_close, wl.stored_preclose)
-                END AS preclose,
-                wl.volume, wl.money
-            FROM with_lag wl
-            LEFT JOIN adj ON adj.symbol = wl.symbol AND adj.date = wl.date
-        """)
-        t1 = time.time()
-        row_count = self.conn.execute("SELECT COUNT(*) FROM _stocks_filled").fetchone()[0]
-        logger.info(f"  Gap-fill complete: {row_count} rows in {t1 - t0:.1f}s")
-
-        # Step 2: Write per-symbol parquet files with price limits
         symbols = [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT symbol FROM _stocks_filled ORDER BY symbol"
+            f"SELECT DISTINCT s0.symbol FROM stocks s0 "
+            f"{market_filter} ORDER BY s0.symbol"
         ).fetchall()]
 
-        if market == "us":
-            for symbol in symbols:
-                se = symbol.replace("'", "''")
-                self.conn.execute(f"""
-                    COPY (
-                        SELECT date, open, close, high, low,
-                            NULL AS high_limit, NULL AS low_limit,
-                            preclose, volume, money
-                        FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
-                    ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
-                """)
-        else:
-            for symbol in symbols:
-                se = symbol.replace("'", "''")
-                output_file = output_dir / f"{symbol}.parquet"
-                code_prefix = symbol[:3]
-                is_chinext_star = code_prefix in ("300", "301", "688", "689")
+        # Shared trade calendar, materialized once (~5200 rows)
+        self.conn.execute("""
+            CREATE OR REPLACE TEMP TABLE _trade_cal AS
+            SELECT date FROM stocks
+            UNION
+            SELECT date FROM trade_days
+        """)
 
-                if is_chinext_star:
-                    limit_sql = """
-                        CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 1.20, 2)
-                             ELSE ROUND(preclose * 1.10, 2) END AS high_limit,
-                        CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 0.80, 2)
-                             ELSE ROUND(preclose * 0.90, 2) END AS low_limit,
-                    """
-                else:
-                    limit_sql = """
-                        ROUND(preclose * 1.10, 2) AS high_limit,
-                        ROUND(preclose * 0.90, 2) AS low_limit,
-                    """
+        batch_size = 250
+        total_batches = (len(symbols) + batch_size - 1) // batch_size
+        for offset in range(0, len(symbols), batch_size):
+            batch = symbols[offset:offset + batch_size]
+            symbol_list = self._symbols_in_clause(batch)
 
-                self.conn.execute(f"""
-                    COPY (
-                        SELECT date, open, close, high, low,
-                            {limit_sql}
-                            preclose, volume, money
-                        FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
-                    ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-                """)
+            logger.info(
+                f"  Gap-filling batch {offset // batch_size + 1}/{total_batches} "
+                f"({len(batch)} symbols)..."
+            )
+            self.conn.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _stocks_filled AS
+                WITH lifespans AS (
+                    SELECT s0.symbol, MIN(s0.date) AS first_date, MAX(s0.date) AS last_date
+                    FROM stocks s0
+                    WHERE s0.symbol IN ({symbol_list})
+                    GROUP BY s0.symbol
+                ),
+                joined AS (
+                    SELECT
+                        ls.symbol,
+                        tc.date,
+                        -- NULL out OHLC when volume=0 (suspended).
+                        -- This prevents mootdx's ex-rights adjusted prices
+                        -- from replacing the last traded price during suspension.
+                        CASE WHEN s.volume > 0 THEN s.open END AS open,
+                        CASE WHEN s.volume > 0 THEN s.close END AS close,
+                        CASE WHEN s.volume > 0 THEN s.high END AS high,
+                        CASE WHEN s.volume > 0 THEN s.low END AS low,
+                        -- Keep preclose only on trading days; during suspension
+                        -- it will be recomputed as LAG(close) in the final step.
+                        CASE WHEN s.volume > 0 THEN s.preclose END AS preclose,
+                        COALESCE(s.volume, 0) AS volume,
+                        COALESCE(s.money, 0.0) AS money
+                    FROM lifespans ls
+                    CROSS JOIN _trade_cal tc
+                    LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = tc.date
+                    WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
+                ),
+                gap_filled AS (
+                    SELECT
+                        symbol, date,
+                        COALESCE(open, last_value(close IGNORE NULLS) OVER w) AS open,
+                        COALESCE(close, last_value(close IGNORE NULLS) OVER w) AS close,
+                        COALESCE(high, last_value(close IGNORE NULLS) OVER w) AS high,
+                        COALESCE(low, last_value(close IGNORE NULLS) OVER w) AS low,
+                        preclose, volume, money
+                    FROM joined
+                    WINDOW w AS (PARTITION BY symbol ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+                ),
+                with_lag AS (
+                    SELECT
+                        symbol, date,
+                        open, close, high, low,
+                        LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS lag_close,
+                        -- Use last ACTIVE trading date (not gap-filled date) for exrights range check.
+                        -- During suspension, lag_date would be yesterday (gap-filled),
+                        -- but we need the last real trading day to catch exrights events
+                        -- that occurred during the suspension period.
+                        last_value(CASE WHEN volume > 0 THEN date END IGNORE NULLS) OVER (
+                            PARTITION BY symbol ORDER BY date
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ) AS last_active_date,
+                        preclose AS stored_preclose,
+                        volume, money
+                    FROM gap_filled
+                ),
+                adj AS (
+                    SELECT
+                        wl.symbol, wl.date,
+                        SUM(COALESCE(ex.bonus_ps, 0)
+                            - COALESCE(ex.rationed_px, 0) * COALESCE(ex.rationed_ps, 0)
+                        ) AS total_deduction,
+                        EXP(SUM(LN(
+                            1 + COALESCE(ex.allotted_ps, 0) + COALESCE(ex.rationed_ps, 0)
+                        ))) AS total_divisor,
+                        COUNT(ex.date) AS event_count
+                    FROM with_lag wl
+                    INNER JOIN exrights ex ON ex.symbol = wl.symbol
+                        AND ex.date > wl.last_active_date AND ex.date <= wl.date
+                    GROUP BY wl.symbol, wl.date
+                )
+                SELECT
+                    wl.symbol,
+                    wl.date::TIMESTAMP_NS AS date,
+                    wl.open, wl.close, wl.high, wl.low,
+                    CASE
+                        WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
+                             AND wl.volume > 0 THEN
+                            ROUND(
+                                (wl.lag_close - adj.total_deduction)
+                                / adj.total_divisor,
+                                2)
+                        ELSE COALESCE(wl.lag_close, wl.stored_preclose)
+                    END AS preclose,
+                    wl.volume, wl.money
+                FROM with_lag wl
+                LEFT JOIN adj ON adj.symbol = wl.symbol AND adj.date = wl.date
+            """)
+            # Write per-symbol parquet files with price limits
+            if market == "us":
+                for symbol in batch:
+                    se = symbol.replace("'", "''")
+                    self.conn.execute(f"""
+                        COPY (
+                            SELECT date, open, close, high, low,
+                                NULL AS high_limit, NULL AS low_limit,
+                                preclose, volume, money
+                            FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
+                        ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+                    """)
+            else:
+                for symbol in batch:
+                    se = symbol.replace("'", "''")
+                    output_file = output_dir / f"{symbol}.parquet"
+                    code_prefix = symbol[:3]
+                    is_chinext_star = code_prefix in ("300", "301", "688", "689")
 
-        self.conn.execute("DROP TABLE IF EXISTS _stocks_filled")
+                    if is_chinext_star:
+                        limit_sql = """
+                            CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 1.20, 2)
+                                 ELSE ROUND(preclose * 1.10, 2) END AS high_limit,
+                            CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 0.80, 2)
+                                 ELSE ROUND(preclose * 0.90, 2) END AS low_limit,
+                        """
+                    else:
+                        limit_sql = """
+                            ROUND(preclose * 1.10, 2) AS high_limit,
+                            ROUND(preclose * 0.90, 2) AS low_limit,
+                        """
+
+                    self.conn.execute(f"""
+                        COPY (
+                            SELECT date, open, close, high, low,
+                                {limit_sql}
+                                preclose, volume, money
+                            FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
+                        ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
+                    """)
+
+            self.conn.execute("DROP TABLE IF EXISTS _stocks_filled")
+
+        self.conn.execute("DROP TABLE IF EXISTS _trade_cal")
         logger.info(f"Exported {len(symbols)} stocks files in {time.time() - t0:.1f}s")
 
     def _export_stocks_with_limits(

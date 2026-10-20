@@ -297,3 +297,30 @@ class TestExportMemoryGuardrail:
             assert (tmp_path / "tmp_duckdb").exists()
         finally:
             writer.close()
+
+    def test_export_survives_spill(self, tmp_path, monkeypatch):
+        """RESET temp_directory raises once spill files exist (DuckDB 1.4.4);
+        the finally block must not crash a successful export when spilling."""
+        monkeypatch.setenv("SIMTRADE_DUCKDB_MEMORY_LIMIT", "64MB")
+        db = tmp_path / "t.duckdb"
+        writer = DuckDBWriter(db_path=str(db))
+        _seed(writer.conn)
+        writer.conn.execute("INSERT INTO valuation (symbol, date, pe_ttm) "
+                            "VALUES ('000001.SZ', '2025-01-06', 10.0)")
+        writer.conn.execute(
+            "INSERT INTO benchmark VALUES "
+            "('2015-01-01', 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)"
+        )
+        writer.conn.execute(
+            "INSERT INTO stocks (symbol, date, open, close, high, low, "
+            "preclose, volume, money) VALUES "
+            "('000300.SS', '2015-01-01', 1.0, 1.0, 1.0, 1.0, 1.0, 1, 1.0)"
+        )
+        try:
+            # 64MB cap forces spill on the export queries
+            writer.export_to_parquet(str(tmp_path / "out"), market="cn")
+            assert writer.conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0] != "64MB"
+        finally:
+            writer.close()

@@ -1368,7 +1368,8 @@ class DuckDBWriter:
         # Guardrail: cap DuckDB memory so oversized queries spill to disk
         # instead of exhausting the host (the 7GB customer box crashed twice
         # on the old all-at-once gap-fill materialization).
-        self.conn.execute("SET memory_limit='2.5GB'")
+        memory_limit = os.environ.get("SIMTRADE_DUCKDB_MEMORY_LIMIT", "2.5GB")
+        self.conn.execute(f"SET memory_limit='{memory_limit}'")
         temp_dir = self.db_path.parent / "tmp_duckdb"
         temp_dir.mkdir(parents=True, exist_ok=True)
         self.conn.execute(f"SET temp_directory='{temp_dir}'")
@@ -1404,7 +1405,9 @@ class DuckDBWriter:
             logger.info(f"Export complete: {output_path}")
         finally:
             self.conn.execute("RESET memory_limit")
-            self.conn.execute("RESET temp_directory")
+            # temp_directory cannot be reset once spill files exist
+            # (DuckDB raises NotImplementedException); it dies with the
+            # connection anyway, so leave it.
 
     def export_delta(
         self,

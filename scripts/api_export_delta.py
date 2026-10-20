@@ -13,6 +13,7 @@ import duckdb
 
 from check_integrity import _halted_symbols_on, _stock_universe
 from export_parquet import _resolve_db
+from simtradedata.writers.duckdb_writer import cn_stock_filter_sql
 
 
 def _parse_date(value: str) -> dt.date:
@@ -246,6 +247,13 @@ def export_api_delta(
             # 输出才必然无注入面（_copy_table 不支持参数化）。
             assert isinstance(last_sync, dt.date) and isinstance(latest, dt.date)
 
+            # 与全量导出对齐：CN 包只含真实 A 股（security_type='1' 或旧库前缀回退），
+            # 指数/ETF/BJ 行不进 API 数据包。stock_metadata 与全量包一致不过滤：
+            # 指数行是有意注入的，客户端盘前选股依赖。
+            stocks_filter = f"AND {cn_stock_filter_sql('stocks.symbol')} " if market == "cn" else ""
+            valuation_filter = f"AND {cn_stock_filter_sql('valuation.symbol')} " if market == "cn" else ""
+            exrights_filter = f"AND {cn_stock_filter_sql('e.symbol')} " if market == "cn" else ""
+
             tables = [
                 _copy_table(
                     conn,
@@ -253,7 +261,7 @@ def export_api_delta(
                     sql=(
                         "SELECT * FROM stocks "
                         f"WHERE date > DATE '{start}' AND date <= DATE '{end}' "
-                        "ORDER BY symbol, date"
+                        f"{stocks_filter}ORDER BY symbol, date"
                     ),
                     output_dir=package_dir,
                 ),
@@ -263,7 +271,7 @@ def export_api_delta(
                     sql=(
                         "SELECT * FROM valuation "
                         f"WHERE date > DATE '{start}' AND date <= DATE '{end}' "
-                        "ORDER BY symbol, date"
+                        f"{valuation_filter}ORDER BY symbol, date"
                     ),
                     output_dir=package_dir,
                 ),
@@ -296,7 +304,7 @@ def export_api_delta(
                         "  WHERE table_name = 'exrights' AND symbol IS NOT NULL "
                         f"    AND (date > DATE '{start}' OR changed_at::DATE > DATE '{start}')"
                         ") "
-                        "ORDER BY e.symbol, e.date"
+                        f"{exrights_filter}ORDER BY e.symbol, e.date"
                     ),
                     output_dir=package_dir,
                 ),

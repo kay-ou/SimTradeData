@@ -226,6 +226,55 @@ def _seed_complete_active_symbols_with_excluded_symbol_db(db_path: Path) -> None
         writer.close()
 
 
+def _seed_non_stock_symbols_db(db_path: Path) -> None:
+    """CN db with index/ETF rows mixed into stocks/valuation, plus exrights change_log."""
+    writer = DuckDBWriter(db_path=str(db_path))
+    try:
+        market_df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-25", "2026-06-26"]),
+            "open": [10.0, 10.5],
+            "close": [10.2, 10.8],
+            "high": [10.3, 10.9],
+            "low": [9.9, 10.4],
+            "preclose": [9.8, 10.2],
+            "volume": [1000, 1200],
+            "money": [10000.0, 12960.0],
+        })
+        valuation_df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-25", "2026-06-26"]),
+            "pe_ttm": [12.1, 12.3],
+            "pb": [1.3, 1.4],
+        })
+        exrights_df = pd.DataFrame({
+            "date": pd.to_datetime(["2026-06-22"]),
+            "allotted_ps": [0.0],
+            "rationed_ps": [0.0],
+            "rationed_px": [0.0],
+            "bonus_ps": [0.1],
+            "dividend": [0.2],
+        })
+
+        writer.write_market_data("000001.SZ", market_df)
+        writer.write_market_data("000300.SS", market_df)  # 沪深300指数
+        writer.write_market_data("159001.SZ", market_df)  # ETF
+        writer.write_valuation("000001.SZ", valuation_df)
+        writer.write_valuation("000300.SS", valuation_df)
+        writer.write_valuation("159001.SZ", valuation_df)
+        writer.write_exrights("000001.SZ", exrights_df)
+        writer.write_exrights("159001.SZ", exrights_df)
+        writer.write_stock_metadata(pd.DataFrame({
+            "symbol": ["000001.SZ", "000300.SS", "159001.SZ"],
+            "stock_name": ["Ping An Bank", "CSI 300", "ETF"],
+            "listed_date": ["1991-04-03", "1991-01-01", "2004-11-08"],
+            "de_listed_date": ["2900-01-01", "2900-01-01", "2900-01-01"],
+            "security_type": ["1", "3", "2"],
+            "listing_status": ["1", "1", "1"],
+            "blocks": ["{}", "{}", "{}"],
+        }))
+    finally:
+        writer.close()
+
+
 def _run_export(tmp_path: Path, db_path: Path, last_sync: str, *extra: str) -> subprocess.CompletedProcess:
     output = tmp_path / "delta.tar.gz"
     return subprocess.run(
@@ -402,6 +451,31 @@ def test_api_delta_ignores_excluded_cn_symbols_when_selecting_complete_date(tmp_
     assert manifest["to_version"] == "2026-06-26"
     assert manifest["up_to_date"] is False
     assert manifest["tables"] != []
+
+
+def test_api_delta_excludes_non_stock_symbols_from_cn_package(tmp_path):
+    db_path = tmp_path / "cn.duckdb"
+    _seed_non_stock_symbols_db(db_path)
+
+    result = _run_export(tmp_path, db_path, "2026-06-25")
+
+    assert result.returncode == 0, result.stderr
+    unpacked = tmp_path / "unpacked"
+    with tarfile.open(tmp_path / "delta.tar.gz", "r:gz") as tar:
+        tar.extractall(unpacked, filter="data")
+
+    stocks = pd.read_parquet(unpacked / "stocks.parquet")
+    assert set(stocks["symbol"]) == {"000001.SZ"}
+
+    valuation = pd.read_parquet(unpacked / "valuation.parquet")
+    assert set(valuation["symbol"]) == {"000001.SZ"}
+
+    # stock_metadata 与全量包一致不过滤（指数行有意保留）
+    metadata = pd.read_parquet(unpacked / "stock_metadata.parquet")
+    assert set(metadata["symbol"]) == {"000001.SZ", "000300.SS", "159001.SZ"}
+
+    exr = pd.read_parquet(unpacked / "exrights.parquet")
+    assert set(exr["symbol"]) == {"000001.SZ"}
 
 
 def test_api_delta_recommends_baseline_when_window_is_too_large(tmp_path):

@@ -160,6 +160,47 @@ def _fill_exer_factors(df) -> None:
     df["exer_forward_b"] = fb[:n]
 
 
+# Legacy code-pattern fallback for databases created before
+# stock_metadata.security_type was populated from BaoStock query_stock_basic().
+# New exports should use cn_stock_filter_sql(), which prefers BaoStock's
+# official security type classification.
+_CN_STOCK_FILTER = (
+    "(symbol LIKE '000___.SZ' OR symbol LIKE '001___.SZ' "
+    "OR symbol LIKE '002___.SZ' OR symbol LIKE '003___.SZ' "
+    "OR symbol LIKE '300___.SZ' OR symbol LIKE '301___.SZ' "
+    "OR symbol LIKE '302___.SZ' "
+    "OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
+    "OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
+    "OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS')"
+)
+
+
+def cn_stock_filter_sql(symbol_expr: str = "symbol") -> str:
+    """Official-first CN stock filter using BaoStock security_type when available."""
+    fallback = _CN_STOCK_FILTER.replace("symbol", symbol_expr)
+    has_security_type_metadata = """
+        EXISTS (
+            SELECT 1 FROM stock_metadata
+            WHERE security_type IS NOT NULL AND security_type != ''
+        )
+    """
+    return f"""(
+        (
+            {has_security_type_metadata}
+            AND EXISTS (
+                SELECT 1 FROM stock_metadata sm
+                WHERE sm.symbol = {symbol_expr}
+                  AND sm.security_type = '1'
+                  AND ({symbol_expr} LIKE '%.SZ' OR {symbol_expr} LIKE '%.SS')
+            )
+        )
+        OR (
+            NOT {has_security_type_metadata}
+            AND {fallback}
+        )
+    )"""
+
+
 class DuckDBWriter:
     """
     Writer for DuckDB incremental storage
@@ -169,20 +210,6 @@ class DuckDBWriter:
     - Incremental updates: query MAX(date) to determine start_date
     - Export to PTrade Parquet format
     """
-
-    # Legacy code-pattern fallback for databases created before
-    # stock_metadata.security_type was populated from BaoStock query_stock_basic().
-    # New exports should use _cn_stock_filter_sql(), which prefers BaoStock's
-    # official security type classification.
-    _CN_STOCK_FILTER = (
-        "(symbol LIKE '000___.SZ' OR symbol LIKE '001___.SZ' "
-        "OR symbol LIKE '002___.SZ' OR symbol LIKE '003___.SZ' "
-        "OR symbol LIKE '300___.SZ' OR symbol LIKE '301___.SZ' "
-        "OR symbol LIKE '302___.SZ' "
-        "OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
-        "OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
-        "OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS')"
-    )
 
     _ALLOWED_TABLES = frozenset({
         "stocks", "valuation", "fundamentals", "exrights",
@@ -1516,28 +1543,7 @@ class DuckDBWriter:
 
     def _cn_stock_filter_sql(self, symbol_expr: str = "symbol") -> str:
         """Official-first CN stock filter using BaoStock security_type when available."""
-        fallback = self._CN_STOCK_FILTER.replace("symbol", symbol_expr)
-        has_security_type_metadata = """
-            EXISTS (
-                SELECT 1 FROM stock_metadata
-                WHERE security_type IS NOT NULL AND security_type != ''
-            )
-        """
-        return f"""(
-            (
-                {has_security_type_metadata}
-                AND EXISTS (
-                    SELECT 1 FROM stock_metadata sm
-                    WHERE sm.symbol = {symbol_expr}
-                      AND sm.security_type = '1'
-                      AND ({symbol_expr} LIKE '%.SZ' OR {symbol_expr} LIKE '%.SS')
-                )
-            )
-            OR (
-                NOT {has_security_type_metadata}
-                AND {fallback}
-            )
-        )"""
+        return cn_stock_filter_sql(symbol_expr)
 
     def _filter_symbols_for_market(self, symbols, market: str) -> list[str]:
         if market != "cn":

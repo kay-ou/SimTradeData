@@ -109,20 +109,38 @@ _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_CO
 # 现算流通市值，join 的 s.close 与引擎读的市场数据同源，除法与乘法逐行相消）。
 # a_shares：客户侧已停供，导出置 NULL 对齐平台行为（get_fundamentals('a_shares')
 # 返回 NaN），旧口径冻结值会误导策略。
+#
+# SIMTRADE_CN_VALUATION_REDIS_ONLY=1（客户云部署开关）：
+# redis 平台直供的估值字段只信 redis——缺口置 NULL，不再用自采 f 数据
+# 现算/兜底。自采值与平台口径不一致（如流通市值），混入会让回测选股
+# 偏离 ptrade 平台。默认关闭，开源部署保持原有 fallback 行为。
 _TOTAL_SHARES_SQL = "COALESCE(v.total_shares, f.total_shares)"
 
-_VALUATION_ENRICH_SELECT = f"""
+
+def _valuation_enrich_select() -> str:
+    """估值导出列清单。
+
+    redis_only 开关开启时（客户云部署，与 SIMTRADE_REDIS_AUTHORITATIVE
+    同类但独立控制导出口径），平台直供字段只信 redis，缺口置 NULL。
+    默认关闭：开源部署保持自采 f 数据兜底。
+    """
+    redis_only = os.environ.get("SIMTRADE_CN_VALUATION_REDIS_ONLY", "0") == "1"
+
+    def pick(value: str, fallback: str) -> str:
+        return value if redis_only else f"COALESCE({value}, {fallback})"
+
+    return f"""
     v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
-    COALESCE(v.roe, f.roe) AS roe, f.roe_ttm,
-    COALESCE(v.roa, f.roa) AS roa, f.roa_ttm,
-    COALESCE(v.naps, CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END) AS naps,
+    {pick("v.roe", "f.roe")} AS roe, f.roe_ttm,
+    {pick("v.roa", "f.roa")} AS roa, f.roa_ttm,
+    {pick("v.naps", "CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END")} AS naps,
     {_TOTAL_SHARES_SQL} AS total_shares,
-    COALESCE(v.a_floats, v.float_value / s.close) AS a_floats,
+    {pick("v.a_floats", "v.float_value / s.close")} AS a_floats,
     NULL::DOUBLE AS a_shares,
     CASE WHEN {_TOTAL_SHARES_SQL} > 0 AND s.close IS NOT NULL
          THEN ROUND({_TOTAL_SHARES_SQL} * s.close, 2) END AS total_value,
-    COALESCE(v.float_value, CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-         THEN ROUND(f.a_floats * s.close, 2) END) AS float_value,
+    {pick("v.float_value", "CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL "
+                            "THEN ROUND(f.a_floats * s.close, 2) END")} AS float_value,
     v.turnover_rate
 """
 
@@ -1926,7 +1944,7 @@ class DuckDBWriter:
             SELECT
                 v.symbol,
                 v.date::TIMESTAMP_NS AS date,
-                {_VALUATION_ENRICH_SELECT}
+                {_valuation_enrich_select()}
             FROM valuation v
             ASOF JOIN (SELECT symbol, date, close FROM stocks) s
                 ON v.symbol = s.symbol AND v.date >= s.date
@@ -2372,7 +2390,7 @@ class DuckDBWriter:
                 SELECT
                     v.symbol,
                     v.date::TIMESTAMP_NS AS date,
-                    {_VALUATION_ENRICH_SELECT}
+                    {_valuation_enrich_select()}
                 FROM valuation v
                 ASOF JOIN (SELECT symbol, date, close FROM stocks WHERE symbol IN ({symbol_list})) s
                     ON v.symbol = s.symbol AND v.date >= s.date
@@ -2782,7 +2800,7 @@ class DuckDBWriter:
             COPY (
                 SELECT
                     v.date::TIMESTAMP_NS AS date,
-                    {_VALUATION_ENRICH_SELECT}
+                    {_valuation_enrich_select()}
                 FROM valuation v
                 ASOF JOIN stocks s
                     ON v.symbol = s.symbol AND v.date >= s.date

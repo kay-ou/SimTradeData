@@ -13,4 +13,6 @@ Environment=PUBLISH_TARGETS=local
 Environment=DOWNLOAD_ATTEMPTS=3
 Environment=RETRY_INTERVAL_SECONDS=1800
 Environment=INTEGRITY_STRICT=1
+Environment=SIMTRADE_DUCKDB_MEMORY_LIMIT=1.5GB
+Environment=LOCAL_RELEASE_KEEP=6
 ExecStart=/usr/bin/bash -lc 'cd "$${SIMTRADE_DATA_DIR:?Set SIMTRADE_DATA_DIR in /etc/simtradedata.env}" && exec bash scripts/run_daily.sh'

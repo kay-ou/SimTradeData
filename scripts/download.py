@@ -334,16 +334,20 @@ Examples:
     print("=" * 70)
 
     success = True
+    degraded: list[str] = []
+    tdx_enabled = bool(args.tdx_source or args.tdx_download)
 
-    # Phase 0: TDX import (optional)
+    # Phase 0: TDX import (optional, but the primary OHLCV source when enabled)
+    tdx_failed = False
     if args.tdx_source:
         if not run_tdx_import(args.tdx_source):
-            success = False
+            tdx_failed = True
     elif args.tdx_download:
         if not run_tdx_download_and_import():
-            success = False
+            tdx_failed = True
 
     # Phase 1: Mootdx
+    mootdx_failed = False
     if args.source in ["mootdx", "all"]:
         skip_mootdx_ohlcv = (
             args.skip_mootdx_ohlcv or args.tdx_source is not None or args.tdx_download
@@ -355,16 +359,42 @@ Examples:
             skip_ohlcv=skip_mootdx_ohlcv,
             skip_bonus_fix=args.skip_bonus_fix,
         ):
-            success = False
+            mootdx_failed = True
 
     # Phase 2: BaoStock
+    baostock_failed = False
     if args.source in ["baostock", "all"]:
         if not run_baostock_download(valuation_only=not args.baostock_full):
+            baostock_failed = True
+
+    # Only a failed primary source is fatal. When TDX supplied OHLCV, the
+    # Mootdx extras and BaoStock enrichments are degraded-but-publishable:
+    # losing the valuation/calendar refresh must not block the daily release.
+    if tdx_enabled:
+        if tdx_failed:
             success = False
+        if mootdx_failed:
+            degraded.append("mootdx extras")
+        if baostock_failed:
+            degraded.append("baostock")
+    else:
+        if args.source in ("mootdx", "all") and mootdx_failed:
+            success = False
+        if args.source == "baostock" and baostock_failed:
+            success = False
+        if args.source == "all" and baostock_failed:
+            degraded.append("baostock")
 
     # Final status
     print("\n")
     print_data_status()
+
+    if degraded:
+        print(
+            "\nWARNING: degraded data sources: "
+            + ", ".join(degraded)
+            + "; continuing to release gates (integrity decides publishability)."
+        )
 
     if not success:
         sys.exit(1)

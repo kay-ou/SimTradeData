@@ -1,0 +1,11 @@
+[Unit]
+Description=SimTradeData monthly DuckDB rebuild (compact MVCC history)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=-/etc/simtradedata.env
+Environment=MARKET=cn
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/bash -lc 'cd "$${SIMTRADE_DATA_DIR:?Set SIMTRADE_DATA_DIR in /etc/simtradedata.env}" && exec bash scripts/rebuild_db.sh'

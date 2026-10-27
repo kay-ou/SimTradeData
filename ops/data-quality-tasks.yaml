@@ -50,6 +50,23 @@ tasks:
     publish_targets_allowed:
     failure_policy: Open a data-quality ticket; do not auto-repair from this task.
 
+  - id: monthly_cn_db_rebuild
+    name: CN monthly DuckDB rebuild
+    level: monthly
+    quality_goal: Compact MVCC history so the working database does not exhaust the data disk.
+    owner: SimTradeData
+    schedule: first Saturday monthly 03:00 Asia/Shanghai
+    trigger: systemd timer
+    systemd_timer: simtradedata-rebuild-db.timer
+    systemd_service: simtradedata-rebuild-db.service
+    command: cd "$SIMTRADE_DATA_DIR" && MARKET=cn bash scripts/rebuild_db.sh
+    working_directory: $SIMTRADE_DATA_DIR
+    logs: journalctl -u simtradedata-rebuild-db.service
+    may_contact_baostock: false
+    may_publish: false
+    publish_targets_allowed:
+    failure_policy: Keep the previous database (imports go to a side file and are renamed only after verification); inspect the service log and rerun manually.
+
   - id: manual_cn_recovery
     name: CN manual recovery
     level: manual

@@ -1,0 +1,11 @@
+[Unit]
+Description=Rebuild SimTradeData DuckDB on the first Saturday of each month
+
+[Timer]
+OnCalendar=Sat *-*-1..7 03:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=30min
+Unit=simtradedata-rebuild-db.service
+
+[Install]
+WantedBy=timers.target

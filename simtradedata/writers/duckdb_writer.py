@@ -831,8 +831,16 @@ class DuckDBWriter:
     # Core write methods (with upsert)
     # ========================================
 
-    def write_market_data(self, symbol: str, df: pd.DataFrame) -> int:
-        """Write market data with automatic upsert"""
+    def write_market_data(
+        self, symbol: str, df: pd.DataFrame, insert_only: bool = False
+    ) -> int:
+        """Write market data with automatic upsert.
+
+        ``insert_only`` skips rows whose (symbol, date) already exists and
+        returns the number of rows actually inserted. TDX bulk imports use
+        this so a nightly full-history scan neither rewrites every existing
+        row nor floods ``data_change_log`` with unchanged symbol/date pairs.
+        """
         if df.empty:
             return 0
 
@@ -864,14 +872,26 @@ class DuckDBWriter:
         df = df[available]
 
         cols_str = ", ".join(available)
-        self.conn.execute(f"""
-            INSERT OR REPLACE INTO stocks ({cols_str})
-            SELECT {cols_str} FROM df
-        """)
-        self._record_symbol_changes("stocks", df)
+        if insert_only:
+            inserted = self.conn.execute(f"""
+                INSERT INTO stocks ({cols_str})
+                SELECT {cols_str} FROM df
+                ON CONFLICT DO NOTHING
+                RETURNING symbol, date
+            """).fetchdf()
+            if not inserted.empty:
+                self._record_symbol_changes("stocks", inserted)
+            written = len(inserted)
+        else:
+            self.conn.execute(f"""
+                INSERT OR REPLACE INTO stocks ({cols_str})
+                SELECT {cols_str} FROM df
+            """)
+            self._record_symbol_changes("stocks", df)
+            written = len(df)
 
-        logger.debug(f"Wrote {len(df)} market rows for {symbol}")
-        return len(df)
+        logger.debug(f"Wrote {written} market rows for {symbol}")
+        return written
 
     def write_valuation(self, symbol: str, df: pd.DataFrame) -> int:
         """Write valuation data with upsert"""

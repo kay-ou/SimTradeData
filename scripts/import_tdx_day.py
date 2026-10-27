@@ -347,11 +347,16 @@ class TdxDayImporter:
         # Set date as index for writer
         df = df.set_index("date")
 
-        # Write to database
-        self.writer.write_market_data(symbol, df)
-        self.stats["records_imported"] += len(df)
+        # TDX history is immutable: nightly incremental imports insert missing
+        # rows only. Replacing every existing row on each full-history scan is
+        # what inflated the DuckDB file and data_change_log. An explicit
+        # --full import keeps the overwrite behavior.
+        written = self.writer.write_market_data(
+            symbol, df, insert_only=not self.full_import
+        )
+        self.stats["records_imported"] += written
 
-        return len(df)
+        return written
 
     def import_from_source(self, source_path: Path) -> dict:
         """

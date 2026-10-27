@@ -960,3 +960,59 @@ class TestEnsureStockMetadataNames:
         assert rows["000004.SZ"] == "2900-01-01"
         # 有历史的股票不受影响
         assert rows["000001.SZ"].startswith("2026-09-30")
+
+
+@pytest.mark.unit
+class TestWriteMarketDataInsertOnly:
+    def setup_method(self):
+        self.writer = DuckDBWriter(db_path=":memory:")
+
+    def teardown_method(self):
+        self.writer.close()
+
+    @staticmethod
+    def _rows(date: str, close: float) -> pd.DataFrame:
+        return pd.DataFrame({
+            "date": pd.to_datetime([date]),
+            "open": [close],
+            "close": [close],
+            "high": [close],
+            "low": [close],
+            "high_limit": [close * 1.1],
+            "low_limit": [close * 0.9],
+            "preclose": [close],
+            "volume": [1000],
+            "money": [close * 1000],
+        })
+
+    def test_insert_only_skips_existing_rows(self):
+        assert self.writer.write_market_data(
+            "000001.SZ", self._rows("2025-01-02", 10.0), insert_only=True
+        ) == 1
+        combined = pd.concat(
+            [self._rows("2025-01-02", 99.0), self._rows("2025-01-03", 11.0)],
+            ignore_index=True,
+        )
+        assert self.writer.write_market_data(
+            "000001.SZ", combined, insert_only=True
+        ) == 1
+        rows = self.writer.conn.execute(
+            "SELECT date, close FROM stocks WHERE symbol='000001.SZ' ORDER BY date"
+        ).fetchall()
+        assert [str(row[0]) for row in rows] == ["2025-01-02", "2025-01-03"]
+        assert rows[0][1] == pytest.approx(10.0)
+
+    def test_insert_only_logs_inserted_rows_only(self):
+        self.writer.write_market_data(
+            "000001.SZ", self._rows("2025-01-02", 10.0), insert_only=True
+        )
+        combined = pd.concat(
+            [self._rows("2025-01-02", 10.0), self._rows("2025-01-03", 11.0)],
+            ignore_index=True,
+        )
+        self.writer.write_market_data("000001.SZ", combined, insert_only=True)
+        logged = self.writer.conn.execute(
+            "SELECT date FROM data_change_log "
+            "WHERE table_name='stocks' AND symbol='000001.SZ' ORDER BY date"
+        ).fetchall()
+        assert len(logged) == 2

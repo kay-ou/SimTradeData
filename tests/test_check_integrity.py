@@ -187,6 +187,45 @@ def test_integrity_allows_halted_active_stock_to_be_stale(tmp_path):
     assert report["valuation"]["latest_count"] == 2
 
 
+def test_integrity_allows_stale_active_stock_without_halt_snapshot(tmp_path):
+    db_path = tmp_path / "cn.duckdb"
+    create_db(db_path)
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("DELETE FROM stocks WHERE symbol = '000001.SZ'")
+        conn.execute("DELETE FROM valuation WHERE symbol = '000001.SZ'")
+        conn.execute("INSERT INTO stocks VALUES ('000001.SZ', '2026-06-23')")
+        conn.execute("INSERT INTO valuation VALUES ('000001.SZ', '2026-06-23')")
+    finally:
+        conn.close()
+
+    report = check_integrity(str(db_path), target_date="2026-06-24")
+
+    assert report["status"] == "pass"
+    assert report["stocks"]["latest_count"] == 1
+    assert report["stocks"]["stale"] == [{"symbol": "000001.SZ", "max_date": "2026-06-23"}]
+
+
+def test_integrity_fails_when_active_stock_has_no_rows(tmp_path):
+    db_path = tmp_path / "cn.duckdb"
+    create_db(db_path)
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("DELETE FROM stocks WHERE symbol = '000001.SZ'")
+        conn.execute("DELETE FROM valuation WHERE symbol = '000001.SZ'")
+    finally:
+        conn.close()
+
+    report = check_integrity(str(db_path), target_date="2026-06-24")
+
+    assert report["status"] == "fail"
+    stocks_check = next(
+        check for check in report["checks"]
+        if check["name"] == "active_stocks_latest"
+    )
+    assert stocks_check["missing"] == ["000001.SZ"]
+
+
 def test_integrity_excludes_delisted_name_with_placeholder_delisted_date(tmp_path):
     db_path = tmp_path / "cn.duckdb"
     conn = duckdb.connect(str(db_path))

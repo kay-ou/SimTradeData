@@ -700,7 +700,8 @@ def check_integrity(
         _add_check(
             checks,
             "active_stocks_latest",
-            stock_status["latest_count"] == len(symbols),
+            # stale 表示停牌/停更，不等于缺数据：写入报告但不阻断发布。
+            len(stock_status["missing"]) == 0,
             expected=len(symbols),
             actual=stock_status["latest_count"],
             missing=stock_status["missing"][:max_examples],
@@ -721,7 +722,8 @@ def check_integrity(
             _add_check(
                 checks,
                 "active_valuation_latest",
-                valuation_status["latest_count"] == len(symbols),
+                # 同上：stale 只记录，只有完全缺失才阻断。
+                len(valuation_status["missing"]) == 0,
                 expected=len(symbols),
                 actual=valuation_status["latest_count"],
                 missing=valuation_status["missing"][:max_examples],

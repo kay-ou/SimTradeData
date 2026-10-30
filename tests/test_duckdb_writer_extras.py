@@ -1016,3 +1016,74 @@ class TestWriteMarketDataInsertOnly:
             "WHERE table_name='stocks' AND symbol='000001.SZ' ORDER BY date"
         ).fetchall()
         assert len(logged) == 2
+
+
+@pytest.mark.unit
+class TestExrightsDividendExport:
+    """部分权威数据源只提供 bonus_ps；导出时必须回填 dividend。"""
+
+    def setup_method(self):
+        self.writer = DuckDBWriter(db_path=":memory:")
+
+    def teardown_method(self):
+        self.writer.close()
+
+    def _write(self, symbol, dates, bonus, dividend):
+        self.writer.write_exrights(symbol, pd.DataFrame({
+            "date": pd.to_datetime(dates),
+            "allotted_ps": [0.0] * len(dates),
+            "rationed_ps": [0.0] * len(dates),
+            "rationed_px": [0.0] * len(dates),
+            "bonus_ps": bonus,
+            "dividend": dividend,
+        }))
+
+    def test_batch_export_backfills_null_dividend(self, tmp_path):
+        self._write("000001.SZ", ["2025-06-12", "2025-10-15"], [0.362, 0.236], [None, None])
+        self._write("000002.SZ", ["2025-06-12"], [0.2], [0.3])
+        self.writer._export_exrights_batch(tmp_path)
+
+        filled = pd.read_parquet(tmp_path / "000001.SZ.parquet")
+        assert filled["dividend"].tolist() == pytest.approx([0.362, 0.236])
+        kept = pd.read_parquet(tmp_path / "000002.SZ.parquet")
+        assert kept["dividend"].tolist() == pytest.approx([0.3])
+
+    def test_write_exrights_fills_contract_columns(self):
+        # 来源只给 bonus_ps 时，其余事件局部字段必须补齐
+        self.writer.write_exrights("000001.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2025-06-12"]),
+            "bonus_ps": [0.362],
+        }))
+        row = self.writer.conn.execute(
+            "SELECT allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend "
+            "FROM exrights WHERE symbol = '000001.SZ'"
+        ).fetchone()
+        assert row == pytest.approx((0.0, 0.0, 0.0, 0.362, 0.362))
+
+    def test_write_exrights_preserves_official_factors(self):
+        # 权威数据源先写入官方复权列，第二来源只更新事件局部列
+        self.writer.conn.execute(
+            "INSERT INTO exrights (symbol, date, allotted_ps, rationed_ps, "
+            "rationed_px, bonus_ps, exer_forward_a, exer_forward_b, "
+            "exer_backward_a, exer_backward_b) "
+            "VALUES ('000001.SZ', DATE '2025-06-12', 0, 0, 0, 0.362, "
+            "0.9, -0.05, 1.1, 0.15)"
+        )
+        self.writer.write_exrights("000001.SZ", pd.DataFrame({
+            "date": pd.to_datetime(["2025-06-12"]),
+            "allotted_ps": [0.0],
+            "rationed_ps": [0.0],
+            "rationed_px": [0.0],
+            "bonus_ps": [0.362],
+            "dividend": [None],
+        }))
+        row = self.writer.conn.execute(
+            "SELECT exer_forward_a, exer_forward_b, exer_backward_a, "
+            "exer_backward_b, dividend FROM exrights "
+            "WHERE symbol = '000001.SZ' AND date = DATE '2025-06-12'"
+        ).fetchone()
+        assert row[0] == pytest.approx(0.9)
+        assert row[1] == pytest.approx(-0.05)
+        assert row[2] == pytest.approx(1.1)
+        assert row[3] == pytest.approx(0.15)
+        assert row[4] == pytest.approx(0.362)

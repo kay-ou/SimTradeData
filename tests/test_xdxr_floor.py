@@ -56,3 +56,20 @@ def test_xdxr_conversion_keeps_full_history_without_floor(monkeypatch):
     result = _convert(_make_xdxr_df())
 
     assert len(result) == 3
+
+
+def test_xdxr_conversion_uses_ptrade_event_contract(monkeypatch):
+    import simtradedata.config.field_mappings as fm
+    from scripts import download_mootdx
+
+    monkeypatch.delenv("SIMTRADE_CN_HISTORY_START", raising=False)
+    importlib.reload(fm)
+    importlib.reload(download_mootdx)
+
+    row = _convert(_make_xdxr_df()).iloc[0]
+    # songzhuangu=10 -> allotted_ps=1.0; fenhong=1 -> bonus_ps=dividend=0.1
+    assert row["allotted_ps"] == pytest.approx(1.0)
+    assert row["rationed_ps"] == pytest.approx(0.0)
+    assert row["rationed_px"] == pytest.approx(0.0)
+    assert row["bonus_ps"] == pytest.approx(0.1)
+    assert row["dividend"] == pytest.approx(0.1)

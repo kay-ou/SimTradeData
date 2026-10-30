@@ -250,9 +250,12 @@ class EastMoneyFetcher(BaseFetcher):
             records: List of dicts from RPT_SHAREBONUS_DET API response.
 
         Returns:
-            DataFrame with columns: date, bonus_ps, allotted_ps.
+            DataFrame with columns: date, bonus_ps, allotted_ps, rationed_ps,
+            rationed_px, dividend.
             bonus_ps = PRETAX_BONUS_RMB / 10 (yuan per share)
             allotted_ps = (BONUS_RATIO + IT_RATIO) / 10 (shares per share)
+            rationed_ps/rationed_px = 0（东财此接口不提供配股）
+            dividend = bonus_ps（兼容字段）
         """
         if not records:
             return pd.DataFrame()
@@ -274,6 +277,9 @@ class EastMoneyFetcher(BaseFetcher):
                 "date": ex_date,
                 "bonus_ps": pretax / 10.0,
                 "allotted_ps": (bonus_ratio + it_ratio) / 10.0,
+                "rationed_ps": 0.0,
+                "rationed_px": 0.0,
+                "dividend": pretax / 10.0,
             })
 
         if not rows:

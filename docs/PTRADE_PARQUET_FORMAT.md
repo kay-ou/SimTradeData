@@ -63,14 +63,28 @@ data/
 
 ### 2. exrights/ - 除权除息事件
 
+事件局部字段是复权计算的契约来源；`exer_forward_*` / `exer_backward_*` 只是平台口径的累计因子快照。
+
 | 字段 | 类型 | 说明 | 备注 |
 |------|------|------|------|
 | `date` | timestamp[ns] | 除权除息日 | **主键** |
-| `allotted_ps` | double | 配股数/股 | 可为0 |
-| `rationed_ps` | double | 配售数/股 | 可为0 |
-| `rationed_px` | double | 配售价格 | 可为0 |
-| `bonus_ps` | double | 红股数/股 | 可为0 |
-| `dividend` | double | 现金分红 | 可为NaN |
+| `allotted_ps` | double | 每股送股/转增 | 可为0 |
+| `rationed_ps` | double | 每股配股 | 可为0 |
+| `rationed_px` | double | 配股价 | 可为0 |
+| `bonus_ps` | double | 每股税前现金分红 | 可为0 |
+| `dividend` | double | 每股税前现金分红，与 `bonus_ps` 同值 | 兼容字段 |
+| `exer_forward_a/b` | double | 平台前复权因子（快照） | 可选 |
+| `exer_backward_a/b` | double | 平台后复权因子（快照） | 可选 |
+
+前复权/后复权均按事件局部字段计算：
+
+```
+m = 1 + allotted_ps + rationed_ps
+a[i] = a[i+1] / m
+b[i] = a[i+1] * (-bonus_ps + rationed_ps * rationed_px) / m + b[i+1]
+```
+
+以窗口末端为锚点（`a=1, b=0`）时得到前复权；从上市首日正向累积时得到后复权。
 
 ---
 

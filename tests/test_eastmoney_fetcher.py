@@ -201,3 +201,24 @@ class TestParseMargin:
 
         assert len(df) == 1
         assert df.iloc[0]["date"] == "2026-06-24"
+
+
+@pytest.mark.unit
+class TestParseDividends:
+    """parse_dividends must emit the full event-local exrights contract."""
+
+    def test_maps_cash_and_bonus_shares(self):
+        records = [{
+            "EX_DIVIDEND_DATE": "2025-06-12 00:00:00",
+            "PRETAX_BONUS_RMB": 3.62,   # 10派3.62元
+            "BONUS_RATIO": 2.0,         # 10送2
+            "IT_RATIO": 1.0,            # 10转1
+        }]
+        df = EastMoneyFetcher.parse_dividends(records)
+        row = df.iloc[0]
+        assert row["date"] == "2025-06-12"
+        assert row["bonus_ps"] == pytest.approx(0.362)
+        assert row["allotted_ps"] == pytest.approx(0.3)
+        assert row["rationed_ps"] == pytest.approx(0.0)
+        assert row["rationed_px"] == pytest.approx(0.0)
+        assert row["dividend"] == pytest.approx(0.362)

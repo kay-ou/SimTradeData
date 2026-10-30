@@ -64,13 +64,16 @@ FUNDAMENTAL_FIELD_MAP = {
     "ebitToInterest": "interest_cover",
 }
 
-# Mootdx XDXR field mapping (for ex-rights/ex-dividend data)
+# Mootdx XDXR field mapping (for ex-rights/ex-dividend data).
+# PTrade exrights 契约（均为每股口径）：
+#   allotted_ps = 送股/转增，rationed_ps = 配股，rationed_px = 配股价，
+#   bonus_ps = 税前现金分红，dividend = 与 bonus_ps 同值（兼容字段）。
 MOOTDX_XDXR_FIELD_MAP = {
     "datetime": "date",
-    "songzhuangu": "bonus_ps",      # Song zhuan gu (bonus shares)
-    "peigu": "rationed_ps",          # Pei gu (rationed shares)
-    "peigujia": "rationed_px",       # Pei gu price
-    "fenhong": "dividend",           # Cash dividend
+    "songzhuangu": "allotted_ps",    # 送股/转增
+    "peigu": "rationed_ps",          # 配股
+    "peigujia": "rationed_px",       # 配股价
+    "fenhong": "bonus_ps",           # 税前现金分红
 }
 
 # Data routing configuration for DataSplitter

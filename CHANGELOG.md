@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- exrights 导出在 `dividend` 为空时用 `bonus_ps` 回填（部分权威数据源只提供 `bonus_ps`，两者在现有数据上完全一致）；覆盖全量 per-symbol、batch、delta 和 API delta 四条导出路径，避免 SimTradeLab 分红缓存读不到现金分红
+- 统一 exrights 事件局部字段契约：`allotted_ps`=送股/转增、`rationed_ps`=配股、`rationed_px`=配股价、`bonus_ps`=税前现金分红、`dividend` 为 `bonus_ps` 别名。修正 TDX 字段映射（`songzhuangu→allotted_ps`、`fenhong→bonus_ps`）、BaoStock 把转增并入 `allotted_ps`、东财补齐配股/分红列；`write_exrights` 对缺失列补 0 并回填 `dividend`
+
 ### Changed
 - Valuation export prefers daily fields (`roe`, `roa`, `naps`, `total_shares`, `float_value`) over quarterly fundamentals enrichment when present
 - `valuation` table gains `a_shares` (A股股本) and `float_value` (流通市值) daily columns; `write_valuation` only overwrites the columns a source provides, preserving daily fields

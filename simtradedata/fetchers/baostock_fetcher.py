@@ -432,17 +432,14 @@ class BaoStockFetcher(BaseFetcher):
         result = pd.DataFrame()
         result["date"] = pd.to_datetime(df["dividOperateDate"])
 
-        # allotted_ps: bonus shares (dividStocksPs = songgu)
-        result["allotted_ps"] = pd.to_numeric(
-            df["dividStocksPs"], errors="coerce"
-        ).fillna(0.0)
+        # allotted_ps: 送股 + 资本公积转增（PTrade 口径统一归入送股）
+        result["allotted_ps"] = (
+            pd.to_numeric(df["dividStocksPs"], errors="coerce").fillna(0.0)
+            + pd.to_numeric(df["dividReserveToStockPs"], errors="coerce").fillna(0.0)
+        )
 
-        # rationed_ps: shares from capital reserve conversion (dividReserveToStockPs)
-        result["rationed_ps"] = pd.to_numeric(
-            df["dividReserveToStockPs"], errors="coerce"
-        ).fillna(0.0)
-
-        # rationed_px: BaoStock does not provide rationed price, set to 0
+        # rationed_ps/rationed_px: BaoStock 不提供配股，置 0
+        result["rationed_ps"] = 0.0
         result["rationed_px"] = 0.0
 
         # bonus_ps: cash dividend per share (used in adj factor formula)

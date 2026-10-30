@@ -178,6 +178,17 @@ def _fill_exer_factors(df) -> None:
     df["exer_forward_b"] = fb[:n]
 
 
+def _fill_dividend_from_bonus_ps(df) -> None:
+    """Backfill cash dividend from bonus_ps when the source omits it.
+
+    部分权威数据源只提供 bonus_ps（税前每股现金分红），不含 dividend；
+    SimTradeLab 的分红缓存读 dividend，导出前用 bonus_ps 补齐。
+    已有 dividend 的行保持原值（现有数据上两列完全一致）。
+    """
+    if "dividend" in df.columns and "bonus_ps" in df.columns:
+        df["dividend"] = df["dividend"].fillna(df["bonus_ps"])
+
+
 # Legacy code-pattern fallback for databases created before
 # stock_metadata.security_type was populated from BaoStock query_stock_basic().
 # New exports should use cn_stock_filter_sql(), which prefers BaoStock's
@@ -1013,6 +1024,18 @@ class DuckDBWriter:
 
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
+        # PTrade exrights 契约：事件局部字段必须齐全且为每股口径。
+        # 缺失列补 0；dividend 是 bonus_ps 的兼容别名，缺省时回填。
+        for col in ("allotted_ps", "rationed_ps", "rationed_px", "bonus_ps"):
+            if col not in df.columns:
+                df[col] = 0.0
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        if "dividend" not in df.columns:
+            df["dividend"] = df["bonus_ps"]
+        df["dividend"] = pd.to_numeric(df["dividend"], errors="coerce").fillna(
+            df["bonus_ps"]
+        )
+
         columns = [
             "symbol",
             "date",
@@ -1026,9 +1049,14 @@ class DuckDBWriter:
         df = df[available]
 
         cols_str = ", ".join(available)
+        # 官方复权列由权威数据源维护：同日期只更新事件局部列，绝不能整行替换，
+        # 否则会把 exer_forward/backward 官方列冲成 NULL。
+        update_cols = [c for c in available if c not in ("symbol", "date")]
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
         self.conn.execute(f"""
-            INSERT OR REPLACE INTO exrights ({cols_str})
+            INSERT INTO exrights ({cols_str})
             SELECT {cols_str} FROM df
+            ON CONFLICT (symbol, date) DO UPDATE SET {set_clause}
         """)
         self._record_symbol_changes("exrights", df)
 
@@ -2035,6 +2063,7 @@ class DuckDBWriter:
         for symbol, group in df_all.groupby("symbol", sort=True):
             group = group.reset_index(drop=True)
             _fill_exer_factors(group)
+            _fill_dividend_from_bonus_ps(group)
             has_delta = (
                 (group["date"] > base_ts) & (group["date"] <= target_ts)
             ).any()
@@ -2295,6 +2324,7 @@ class DuckDBWriter:
             return
 
         _fill_exer_factors(df)
+        _fill_dividend_from_bonus_ps(df)
 
         df.to_parquet(str(output_file), index=False, compression="zstd")
 
@@ -2325,6 +2355,7 @@ class DuckDBWriter:
         for symbol, group in df_all.groupby("symbol"):
             df = group.drop(columns=["symbol"]).reset_index(drop=True)
             _fill_exer_factors(df)
+            _fill_dividend_from_bonus_ps(df)
             df.to_parquet(str(output_dir / f"{symbol}.parquet"), index=False, compression="zstd")
             count += 1
 

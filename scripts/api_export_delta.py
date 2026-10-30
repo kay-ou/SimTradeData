@@ -293,10 +293,11 @@ def export_api_delta(
                     table="exrights",
                     sql=(
                         # 按 data_change_log 标记的 symbol 全量导出（长表），客户端
-                        # 覆盖对应 per-symbol 文件。客户 redis 权威部署每天全量标记，
+                        # 覆盖对应 per-symbol 文件。权威部署每天全量标记，
                         # 其他部署按东财新事件增量标记。
                         "SELECT e.symbol, e.date::TIMESTAMP_NS AS date, "
-                        "allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend, "
+                        "allotted_ps, rationed_ps, rationed_px, bonus_ps, "
+                        "COALESCE(e.dividend, e.bonus_ps) AS dividend, "
                         "exer_forward_a, exer_forward_b, exer_backward_a, exer_backward_b "
                         "FROM exrights e "
                         "WHERE e.symbol IN ("

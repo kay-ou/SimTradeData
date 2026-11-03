@@ -2,8 +2,8 @@
 Main entry point for command-line interface
 
 Usage:
-    poetry run python scripts/download_efficient.py  # Download data
-    poetry run python scripts/export_parquet.py      # Export to Parquet
+    uv run python scripts/download_efficient.py  # Download data
+    uv run python scripts/export_parquet.py      # Export to Parquet
 """
 
 
@@ -11,8 +11,8 @@ def main():
     print("SimTradeData - Download and export stock data")
     print()
     print("Usage:")
-    print("  poetry run python scripts/download_efficient.py  # Download data")
-    print("  poetry run python scripts/export_parquet.py      # Export to Parquet")
+    print("  uv run python scripts/download_efficient.py  # Download data")
+    print("  uv run python scripts/export_parquet.py      # Export to Parquet")
     print()
     print("Download options:")
     print("  --skip-fundamentals  Skip quarterly financial data")

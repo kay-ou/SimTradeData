@@ -567,7 +567,7 @@ def test_release_data_publishes_cos_delta_before_baseline():
     baseline_upload = '--file "$archive"'
 
     assert lookup in source
-    assert source.index(lookup) < source.index("poetry run python scripts/export_parquet.py")
+    assert source.index(lookup) < source.index('"$PYTHON" scripts/export_parquet.py')
     assert export in source
     assert 'tar -xOf "$delta_archive" manifest.json' in source
     assert delta_name in source
@@ -672,12 +672,10 @@ print("|".join((tag, "delta" if delta else "baseline", m.get("from_version", "")
         """,
     )
     _write_executable(
-        bin_dir / "poetry",
+        bin_dir / "python-stub",
         """
         #!/usr/bin/env bash
         set -euo pipefail
-        [[ "$1" == "run" && "$2" == "python" ]]
-        shift 2
         script="$1"
         shift
         if [[ "$script" == "scripts/export_parquet.py" ]]; then
@@ -738,6 +736,7 @@ print("|".join((tag, "delta" if delta else "baseline", m.get("from_version", "")
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "PYTHON": str(bin_dir / "python-stub"),
         "COS_UPLOAD_PYTHON": str(bin_dir / "fake-python"),
         "COS_SECRET_ID": "sid",
         "COS_SECRET_KEY": "skey",

@@ -11,6 +11,14 @@ account.
 | `monthly_cn_reconcile` | `simtradedata-monthly-cn-reconcile.service` | `simtradedata-monthly-cn-reconcile.timer` | Manual after validation |
 | `monthly_cn_db_rebuild` | `simtradedata-rebuild-db.service` | `simtradedata-rebuild-db.timer` | Enable |
 
+Provision the Python environment in the repository before installing any timer.
+The service templates run their scripts with the repository's `.venv/bin/python`:
+
+```bash
+cd /path/to/SimTradeData
+uv sync --frozen --no-dev
+```
+
 Install the daily timer:
 
 ```bash

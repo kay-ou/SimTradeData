@@ -19,7 +19,7 @@ DB_PATH = str(DUCKDB_PATH)
 
 def print_usage() -> None:
     print(
-        "Usage: poetry run python scripts/refresh_a_floats.py\n\n"
+        "Usage: uv run python scripts/refresh_a_floats.py\n\n"
         "Backfill a_floats into the fundamentals table from cached or "
         "downloaded mootdx gpcw*.zip files."
     )

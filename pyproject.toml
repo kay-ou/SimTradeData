@@ -13,26 +13,27 @@ dependencies = [
     "duckdb>=1.2.0,<2.0.0",
     "pyarrow>=19.0.0,<20.0.0",
     "yfinance>=0.2.0",
-    "mootdx (>=0.11.7,<0.12.0)",
+    "mootdx>=0.11.7,<0.12.0",
     "cachetools>=6.2.1,<7.0.0",
+    "pandas>=2.3.1,<3.0.0",
+    "numpy<2",
 ]
 
-# CLI entry points (run scripts directly with poetry run python scripts/xxx.py)
-
-
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.13.0,<0.14"]
+build-backend = "uv_build"
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
-pandas = "^2.3.1"
-black = "^25.1.0"
-isort = "^6.0.1"
-autoflake = "^2.3.1"
-pre-commit = "^4.2.0"
-pytest-cov = "^7.0.0"
-pytest-benchmark = "^5.1.0"
-baostock = "^0.9.1"
-numpy = "<2"
-ruff = "^0.15.19"
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1,<9.0.0",
+    "black>=25.1.0,<26.0.0",
+    "isort>=6.0.1,<7.0.0",
+    "autoflake>=2.3.1,<3.0.0",
+    "pre-commit>=4.2.0,<5.0.0",
+    "pytest-cov>=7.0.0,<8.0.0",
+    "pytest-benchmark>=5.1.0,<6.0.0",
+    "ruff>=0.15.19,<0.16.0",
+]

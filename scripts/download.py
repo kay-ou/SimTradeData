@@ -248,13 +248,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  poetry run python scripts/download.py                # Full download
-  poetry run python scripts/download.py --status       # Show data status only
-  poetry run python scripts/download.py --source mootdx    # Mootdx only
-  poetry run python scripts/download.py --source baostock  # BaoStock only
-  poetry run python scripts/download.py --skip-fundamentals
-  poetry run python scripts/download.py --tdx-source data/downloads/hsjday.zip --source mootdx
-  poetry run python scripts/download.py --tdx-download --source mootdx
+  uv run python scripts/download.py                # Full download
+  uv run python scripts/download.py --status       # Show data status only
+  uv run python scripts/download.py --source mootdx    # Mootdx only
+  uv run python scripts/download.py --source baostock  # BaoStock only
+  uv run python scripts/download.py --skip-fundamentals
+  uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --source mootdx
+  uv run python scripts/download.py --tdx-download --source mootdx
 """
     )
 

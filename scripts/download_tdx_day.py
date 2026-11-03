@@ -12,16 +12,16 @@ Features:
 
 Usage:
     # Download and import (incremental)
-    poetry run python scripts/download_tdx_day.py
+    uv run python scripts/download_tdx_day.py
 
     # Full reimport
-    poetry run python scripts/download_tdx_day.py --full
+    uv run python scripts/download_tdx_day.py --full
 
     # Download only (no import)
-    poetry run python scripts/download_tdx_day.py --download-only
+    uv run python scripts/download_tdx_day.py --download-only
 
     # Import from existing file
-    poetry run python scripts/download_tdx_day.py --file hsjday.zip
+    uv run python scripts/download_tdx_day.py --file hsjday.zip
 """
 
 import argparse
@@ -174,16 +174,16 @@ def main():
         epilog="""
 Examples:
     # Download and import (incremental)
-    poetry run python scripts/download_tdx_day.py
+    uv run python scripts/download_tdx_day.py
 
     # Full reimport
-    poetry run python scripts/download_tdx_day.py --full
+    uv run python scripts/download_tdx_day.py --full
 
     # Download only
-    poetry run python scripts/download_tdx_day.py --download-only
+    uv run python scripts/download_tdx_day.py --download-only
 
     # Use existing file
-    poetry run python scripts/download_tdx_day.py --file hsjday.zip
+    uv run python scripts/download_tdx_day.py --file hsjday.zip
         """,
     )
     parser.add_argument(

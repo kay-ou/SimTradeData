@@ -8,7 +8,7 @@ then falls back to a stdlib signed PUT. It atomically updates a releases.json
 file that mimics the GitHub Releases API response format.
 
 Usage:
-    COS_SECRET_ID=xxx COS_SECRET_KEY=xxx poetry run python scripts/cos_upload.py \
+    COS_SECRET_ID=xxx COS_SECRET_KEY=xxx uv run python scripts/cos_upload.py \
         --file /tmp/simtradedata-cn-2026-06-24.tar.gz \
         --data-manifest data/export/cn/manifest.json \
         --bucket my-bucket \

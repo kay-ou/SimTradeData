@@ -5,7 +5,7 @@ This package fetches data from BaoStock, converts it to PTrade-compatible
 format, stores in DuckDB for incremental updates, and exports to Parquet.
 """
 
-__version__ = "0.2.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "BaoStockFetcher",

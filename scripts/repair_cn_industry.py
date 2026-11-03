@@ -11,8 +11,8 @@ parses and writes into stock_metadata.blocks. Existing blocks are merged
 One-time repair job; not part of the daily download path.
 
 Usage:
-    poetry run python scripts/repair_cn_industry.py
-    poetry run python scripts/repair_cn_industry.py --db data/cn.duckdb
+    uv run python scripts/repair_cn_industry.py
+    uv run python scripts/repair_cn_industry.py --db data/cn.duckdb
 """
 
 import argparse

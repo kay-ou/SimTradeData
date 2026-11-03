@@ -806,7 +806,7 @@ def download_all_data(
             print(f"Size: {db_size:.1f} MB")
 
         print("\nTo export to Parquet format:")
-        print("  poetry run python scripts/export_parquet.py")
+        print("  uv run python scripts/export_parquet.py")
 
 
 if __name__ == "__main__":

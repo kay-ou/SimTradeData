@@ -8,7 +8,7 @@
 [![DuckDB](https://img.shields.io/badge/Storage-DuckDB-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
 [![Parquet](https://img.shields.io/badge/Export-Parquet-50ABF1)](https://parquet.apache.org/)
 [![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
-[![Poetry](https://img.shields.io/badge/Packaging-Poetry-60A5FA?logo=poetry&logoColor=white)](https://python-poetry.org/)
+[![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
 
 > **BaoStock + Mootdx + EastMoney + yfinance Multi-Quelle** | **Chinesische A-Aktien + US-Aktien** | **PTrade-kompatibel** | **DuckDB + Parquet-Speicherung**
 
@@ -80,7 +80,7 @@ data/
 ## Voraussetzungen
 
 - **Python**: 3.10 oder höher
-- **Poetry**: [Installationsanleitung](https://python-poetry.org/docs/#installation)
+- **uv**: [Installationsanleitung](https://docs.astral.sh/uv/getting-started/installation/)
 - **Netzwerk**: Zum Herunterladen von Daten erforderlich (für A-Aktien-Daten wird ein chinesisches Festlandnetzwerk empfohlen)
 
 ## Schnellstart
@@ -109,8 +109,7 @@ tar -xzf simtradelab-data-us-*.tar.gz -C /path/to/SimTradeLab/data/us/
 ```bash
 git clone https://github.com/kay-ou/SimTradeData.git
 cd SimTradeData
-poetry install
-poetry shell
+uv sync
 ```
 
 #### 2. Daten herunterladen
@@ -121,19 +120,19 @@ Ein Befehl lädt alle Daten herunter, nutzt das TDX-Tagespaket für den schnelle
 
 ```bash
 # Tägliche/produktive CN-Aktualisierung (empfohlen)
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # Vollständige Fallback-Orchestrierung ohne TDX-Paket
-poetry run python scripts/download.py
+uv run python scripts/download.py
 
 # Bereits heruntergeladene TDX-ZIP-Datei verwenden
-poetry run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
 
 # Datenstatus prüfen
-poetry run python scripts/download.py --status
+uv run python scripts/download.py --status
 
 # Finanzdaten überspringen (schneller)
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
 ```
 
 **Arbeitsteilung der Datenquellen**
@@ -154,23 +153,23 @@ poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-
 
 ```bash
 # Vollständiger Download (6.000+ US-Aktien mit OHLCV + Finanzdaten + Bewertung + Metadaten)
-poetry run python scripts/download_us.py
+uv run python scripts/download_us.py
 
 # Bestimmte Symbole (für kleine Tests)
-poetry run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
+uv run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
 ```
 
 #### 3. Nach Parquet exportieren
 
 ```bash
 # A-Aktien exportieren → data/export/cn/
-poetry run python scripts/export_parquet.py
+uv run python scripts/export_parquet.py
 
 # US-Aktien exportieren → data/export/us/
-poetry run python scripts/export_parquet.py --market us
+uv run python scripts/export_parquet.py --market us
 
 # Benutzerdefiniertes Ausgabeverzeichnis
-poetry run python scripts/export_parquet.py --market cn --output /custom/path
+uv run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
 Der normale Export erstellt das Zielverzeichnis vollständig aus DuckDB neu; er führt die vorhandenen Parquet-Dateien nicht direkt zusammen.
@@ -239,13 +238,13 @@ Enthält 23 Finanzkennzahlen und deren TTM-Versionen. Details siehe [PTRADE_PARQ
 
 ```bash
 # 1. Nur neue Daten herunterladen; vorhandene Daten werden übersprungen
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # 2. Vollständigen Parquet-Snapshot exportieren (ersetzt das Ausgabeverzeichnis)
-poetry run python scripts/export_parquet.py
+uv run python scripts/export_parquet.py
 
 # 3. Nur für Maintainer: eigenständiges Delta-Paket exportieren
-poetry run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
+uv run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
 ```
 
 Der Delta-Export erzeugt ein separates Paket mit den geänderten Zeilen der Symboltabellen und einem Manifest für das angegebene Versionsfenster.
@@ -255,7 +254,7 @@ Endnutzer führen diesen Delta-Befehl nicht aus und wählen keinen Aktualisierun
 ## Tests
 
 ```bash
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ## Verwandte Links

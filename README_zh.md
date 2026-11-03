@@ -8,7 +8,7 @@
 [![DuckDB](https://img.shields.io/badge/Storage-DuckDB-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
 [![Parquet](https://img.shields.io/badge/Export-Parquet-50ABF1)](https://parquet.apache.org/)
 [![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
-[![Poetry](https://img.shields.io/badge/Packaging-Poetry-60A5FA?logo=poetry&logoColor=white)](https://python-poetry.org/)
+[![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
 
 > **BaoStock + Mootdx + EastMoney + yfinance 多数据源** | **A股 + 美股** | **PTrade格式兼容** | **DuckDB + Parquet存储**
 
@@ -80,7 +80,7 @@ data/
 ## 前置条件
 
 - **Python**: 3.10 或更高版本
-- **Poetry**: [安装指南](https://python-poetry.org/docs/#installation)
+- **uv**: [安装指南](https://docs.astral.sh/uv/getting-started/installation/)
 - **网络**: 下载数据需要网络（A 股数据建议使用中国大陆网络）
 
 ## 快速开始
@@ -112,10 +112,7 @@ git clone https://github.com/kay-ou/SimTradeData.git
 cd SimTradeData
 
 # 安装依赖
-poetry install
-
-# 激活虚拟环境
-poetry shell
+uv sync
 ```
 
 #### 2. 下载数据
@@ -129,25 +126,25 @@ poetry shell
 # TDX: OHLCV 全历史和日线包导入
 # Mootdx: 除权除息、批量财务、交易日历、基准指数
 # BaoStock: 估值指标、ST/停牌状态、指数成分股
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # 不使用 TDX 日线包的完整兜底编排
-poetry run python scripts/download.py
+uv run python scripts/download.py
 
 # 使用已下载的 TDX ZIP 文件
-poetry run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
 
 # 查看数据状态
-poetry run python scripts/download.py --status
+uv run python scripts/download.py --status
 
 # 跳过财务数据（更快）
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
 
 # 仅运行 Mootdx 阶段
-poetry run python scripts/download.py --source mootdx
+uv run python scripts/download.py --source mootdx
 
 # 仅运行 BaoStock 阶段
-poetry run python scripts/download.py --source baostock
+uv run python scripts/download.py --source baostock
 ```
 
 **数据源分工说明**
@@ -168,23 +165,23 @@ poetry run python scripts/download.py --source baostock
 
 ```bash
 # BaoStock（包含估值数据，但速度较慢）
-poetry run python scripts/download_efficient.py
-poetry run python scripts/download_efficient.py --skip-fundamentals
-poetry run python scripts/download_efficient.py --valuation-only  # 仅估值+状态
+uv run python scripts/download_efficient.py
+uv run python scripts/download_efficient.py --skip-fundamentals
+uv run python scripts/download_efficient.py --valuation-only  # 仅估值+状态
 
 # Mootdx（速度快，但无估值数据）
-poetry run python scripts/download_mootdx.py
-poetry run python scripts/download_mootdx.py --skip-fundamentals
+uv run python scripts/download_mootdx.py
+uv run python scripts/download_mootdx.py --skip-fundamentals
 ```
 
 **EastMoney 补充数据（资金流向、龙虎榜、融资融券）**
 
 ```bash
 # 下载最近30天的补充数据（需先有行情数据）
-poetry run python scripts/download_daily_extras.py
+uv run python scripts/download_daily_extras.py
 
 # 指定天数（龙虎榜 API 仅保留~30天数据，建议定期运行）
-poetry run python scripts/download_daily_extras.py --days 7
+uv run python scripts/download_daily_extras.py --days 7
 ```
 
 **美股数据下载（yfinance）**
@@ -193,16 +190,16 @@ poetry run python scripts/download_daily_extras.py --days 7
 
 ```bash
 # 完整下载（6000+ 只美股，含 OHLCV + 财务 + 估值 + 元数据）
-poetry run python scripts/download_us.py
+uv run python scripts/download_us.py
 
 # 指定股票（小规模测试）
-poetry run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
+uv run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
 
 # 仅下载行情数据（跳过耗时的逐股财务和元数据）
-poetry run python scripts/download_us.py --skip-fundamentals --skip-metadata
+uv run python scripts/download_us.py --skip-fundamentals --skip-metadata
 
 # 指定起始日期
-poetry run python scripts/download_us.py --start-date 2020-01-01
+uv run python scripts/download_us.py --start-date 2020-01-01
 ```
 
 美股代码格式：`AAPL.US`（与 A 股 `600000.SS` 保持 `{code}.{market}` 一致），数据存入独立数据库 `data/us.duckdb`。
@@ -211,26 +208,26 @@ poetry run python scripts/download_us.py --start-date 2020-01-01
 
 ```bash
 # 自动下载通达信官方沪深京日线完整包（~500MB）
-poetry run python scripts/download_tdx_day.py
+uv run python scripts/download_tdx_day.py
 
 # 强制重新下载
-poetry run python scripts/download_tdx_day.py --force-download
+uv run python scripts/download_tdx_day.py --force-download
 
 # 使用已下载的文件
-poetry run python scripts/download_tdx_day.py --file hsjday.zip
+uv run python scripts/download_tdx_day.py --file hsjday.zip
 ```
 
 #### 3. 导出为 Parquet
 
 ```bash
 # 导出 A股 → data/export/cn/
-poetry run python scripts/export_parquet.py
+uv run python scripts/export_parquet.py
 
 # 导出美股 → data/export/us/
-poetry run python scripts/export_parquet.py --market us
+uv run python scripts/export_parquet.py --market us
 
 # 自定义输出目录
-poetry run python scripts/export_parquet.py --market cn --output /custom/path
+uv run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
 #### 4. 发布数据（维护者）
@@ -418,13 +415,13 @@ BATCH_SIZE = 20
 
 ```bash
 # 1. 增量下载（仅获取新数据，已有数据自动跳过）
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # 2. 导出完整 Parquet 快照（替换输出目录）
-poetry run python scripts/export_parquet.py
+uv run python scripts/export_parquet.py
 
 # 3. 仅维护者：导出独立增量包
-poetry run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
+uv run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
 ```
 
 第 1 步会导入最新 TDX 日线包，然后跳过 Mootdx OHLCV，并刷新剩余 Mootdx/BaoStock 数据。
@@ -449,13 +446,13 @@ DOWNLOAD_ATTEMPTS=3 INTEGRITY_STRICT=1 bash scripts/run_daily.sh
 
 ```bash
 # 单元测试（无需网络）
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 
 # SmartRouter 路由和 fallback 测试
-poetry run pytest tests/router/ -v
+uv run pytest tests/router/ -v
 
 # SmartRouter 真实数据源集成测试（需要网络）
-poetry run python scripts/test_smart_router_live.py
+uv run python scripts/test_smart_router_live.py
 ```
 
 ## 版本历史

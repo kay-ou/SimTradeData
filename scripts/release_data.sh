@@ -9,13 +9,14 @@
 #
 # Prerequisites:
 #   Local:   no external dependencies
-#   GitHub:  poetry install, gh auth login
+#   GitHub:  uv sync, gh auth login
 #   COS:     COS_SECRET_ID / COS_SECRET_KEY env vars set
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON="${PYTHON:-$PROJECT_ROOT/.venv/bin/python}"
 
 # ── Defaults ────────────────────────────────────────────────────────
 MARKET="cn"
@@ -61,7 +62,7 @@ run_cos_python() {
   elif command -v python3 >/dev/null 2>&1 && python3 -c "import sys; import qcloud_cos; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
     python3 "$@"
   else
-    poetry run python "$@"
+    "$PYTHON" "$@"
   fi
 }
 
@@ -155,7 +156,7 @@ release_market() {
   # 1. Export
   echo "=== Exporting $market data ==="
   cd "$PROJECT_ROOT"
-  poetry run python scripts/export_parquet.py --market "$market"
+  "$PYTHON" scripts/export_parquet.py --market "$market"
 
   # Data manifest produced by export_parquet.py
   local data_manifest="$export_dir/manifest.json"
@@ -259,7 +260,7 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
           local delta_manifest
           if delta_manifest=$(mktemp "$archive_dir/delta-manifest.XXXXXX.json"); then
             echo "  Building COS delta from $cos_base_version to $version..."
-            if poetry run python scripts/api_export_delta.py --market "$market" --last-sync "$cos_base_version" --output "$delta_archive"; then
+            if "$PYTHON" scripts/api_export_delta.py --market "$market" --last-sync "$cos_base_version" --output "$delta_archive"; then
               if tar -xOf "$delta_archive" manifest.json > "$delta_manifest"; then
                 if delta_versions_are_valid < "$delta_manifest" 2>/dev/null; then
                   local delta_manifest_status=0

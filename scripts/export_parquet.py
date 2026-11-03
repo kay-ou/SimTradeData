@@ -4,10 +4,10 @@
 Export DuckDB data to Parquet format
 
 Usage:
-    poetry run python scripts/export_parquet.py                  # export CN
-    poetry run python scripts/export_parquet.py --market us      # export US
-    poetry run python scripts/export_parquet.py --market us --output /custom/path
-    poetry run python scripts/export_parquet.py --delta --base-version 2026-06-20
+    uv run python scripts/export_parquet.py                  # export CN
+    uv run python scripts/export_parquet.py --market us      # export US
+    uv run python scripts/export_parquet.py --market us --output /custom/path
+    uv run python scripts/export_parquet.py --delta --base-version 2026-06-20
 """
 
 import argparse

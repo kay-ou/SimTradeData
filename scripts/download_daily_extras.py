@@ -10,8 +10,8 @@ Fetches data not available from mootdx:
 LHB API only retains ~30 days of data, so this should run regularly.
 
 Usage:
-    poetry run python scripts/download_daily_extras.py
-    poetry run python scripts/download_daily_extras.py --days 7
+    uv run python scripts/download_daily_extras.py
+    uv run python scripts/download_daily_extras.py --days 7
 """
 
 import argparse

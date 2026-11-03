@@ -502,17 +502,17 @@ def test_daily_pipeline_waits_until_final_attempt_before_lagging_local_release(
     attempts_file = tmp_path / "download_attempts"
     release_attempt_file = tmp_path / "release_attempt"
 
-    fake_poetry = fake_bin / "poetry"
-    fake_poetry.write_text(
+    fake_python = fake_bin / "python-stub"
+    fake_python.write_text(
         """#!/bin/bash
 set -euo pipefail
 
-if [[ "${1:-}" == "run" && "${2:-}" == "python" && "${3:-}" == "-c" ]]; then
+if [[ "${1:-}" == "-c" ]]; then
   printf '%s\\n' "${SIMTRADE_TEST_VERSION:?}"
   exit 0
 fi
 
-if [[ "${1:-}" == "run" && "${2:-}" == "python" && "${3:-}" == "scripts/download.py" ]]; then
+if [[ "${1:-}" == "scripts/download.py" ]]; then
   attempts=0
   if [[ -f "${SIMTRADE_TEST_ATTEMPTS:?}" ]]; then
     attempts="$(cat "$SIMTRADE_TEST_ATTEMPTS")"
@@ -522,16 +522,16 @@ if [[ "${1:-}" == "run" && "${2:-}" == "python" && "${3:-}" == "scripts/download
   exit 0
 fi
 
-if [[ "${1:-}" == "run" && "${2:-}" == "python" && "${3:-}" == "scripts/check_integrity.py" ]]; then
+if [[ "${1:-}" == "scripts/check_integrity.py" ]]; then
   exit 0
 fi
 
-echo "unexpected poetry command: $*" >&2
+echo "unexpected python command: $*" >&2
 exit 127
 """,
         encoding="utf-8",
     )
-    fake_poetry.chmod(0o755)
+    fake_python.chmod(0o755)
 
     release_script = scripts_dir / "release_data.sh"
     release_script.write_text(
@@ -560,7 +560,7 @@ printf '{"version":"%s"}\\n' "${SIMTRADE_TEST_VERSION:?}" >"$manifest_dir/manife
             "LOCK_FILE": str(tmp_path / "daily.lock"),
             "LOG_DIR": str(tmp_path / "logs"),
             "MARKET": "cn",
-            "PATH": f"{fake_bin}:{env['PATH']}",
+            "PYTHON": str(fake_python),
             "PUBLISH_TARGETS": "local",
             "RETRY_INTERVAL_SECONDS": "0",
             "SIMTRADE_DATA_DIR": str(project_dir),

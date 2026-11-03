@@ -13,16 +13,16 @@ Features:
 
 Usage:
     # Import from ZIP file
-    poetry run python scripts/import_tdx_day.py hsjday.zip
+    uv run python scripts/import_tdx_day.py hsjday.zip
 
     # Import from extracted directory
-    poetry run python scripts/import_tdx_day.py /path/to/tdx/vipdoc/
+    uv run python scripts/import_tdx_day.py /path/to/tdx/vipdoc/
 
     # Full reimport (ignore existing data)
-    poetry run python scripts/import_tdx_day.py hsjday.zip --full
+    uv run python scripts/import_tdx_day.py hsjday.zip --full
 
     # Specify database path
-    poetry run python scripts/import_tdx_day.py hsjday.zip --db data/cn.duckdb
+    uv run python scripts/import_tdx_day.py hsjday.zip --db data/cn.duckdb
 """
 
 import argparse
@@ -505,13 +505,13 @@ def main():
         epilog="""
 Examples:
     # Import from ZIP file (incremental)
-    poetry run python scripts/import_tdx_day.py hsjday.zip
+    uv run python scripts/import_tdx_day.py hsjday.zip
 
     # Full reimport from ZIP
-    poetry run python scripts/import_tdx_day.py hsjday.zip --full
+    uv run python scripts/import_tdx_day.py hsjday.zip --full
 
     # Import from extracted directory
-    poetry run python scripts/import_tdx_day.py ~/tdx/vipdoc/
+    uv run python scripts/import_tdx_day.py ~/tdx/vipdoc/
 
 Data source:
     https://www.tdx.com.cn/article/vipdata.html

@@ -1,6 +1,6 @@
 """Smoke test: verify SmartRouter works with real data sources.
 
-Run manually: poetry run python scripts/test_smart_router_live.py
+Run manually: uv run python scripts/test_smart_router_live.py
 """
 
 import sys

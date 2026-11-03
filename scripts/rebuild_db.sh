@@ -13,7 +13,7 @@
 #   SIMTRADE_DATA_DIR                  Repository root (default: script's parent directory)
 #   MARKET                             cn | us (default: cn)
 #   MIN_FREE_GB                        Required free space before rebuilding (default: 20)
-#   PYTHON                             Interpreter command (default: poetry run python)
+#   PYTHON                             Interpreter path (default: .venv/bin/python)
 #   SIMTRADE_DUCKDB_MEMORY_LIMIT       Export memory limit (default: 1.5GB)
 #   SIMTRADE_REBUILD_IMPORT_MEMORY_LIMIT  Import memory limit (default: 2GB)
 #   LOCK_FILE                          Pipeline lock (default: /tmp/simtradedata_daily_<market>.lock)
@@ -24,7 +24,7 @@ set -euo pipefail
 SIMTRADE_DATA_DIR="${SIMTRADE_DATA_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 MARKET="${MARKET:-cn}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
-PYTHON="${PYTHON:-poetry run python}"
+PYTHON="${PYTHON:-$SIMTRADE_DATA_DIR/.venv/bin/python}"
 EXPORT_MEMORY_LIMIT="${SIMTRADE_DUCKDB_MEMORY_LIMIT:-1.5GB}"
 IMPORT_MEMORY_LIMIT="${SIMTRADE_REBUILD_IMPORT_MEMORY_LIMIT:-2GB}"
 LOCK_FILE="${LOCK_FILE:-/tmp/simtradedata_daily_${MARKET}.lock}"
@@ -69,7 +69,7 @@ for path in "$EXPORT_DIR" "$NEW_DB"; do
 done
 
 echo "=== Export $DB -> $EXPORT_DIR ==="
-$PYTHON - "$DB" "$EXPORT_DIR" "$COUNTS_FILE" "$EXPORT_MEMORY_LIMIT" <<'PY'
+"$PYTHON" - "$DB" "$EXPORT_DIR" "$COUNTS_FILE" "$EXPORT_MEMORY_LIMIT" <<'PY'
 import json
 import sys
 
@@ -110,7 +110,7 @@ print(f"verified export of {len(counts)} tables")
 PY
 
 echo "=== Import into $NEW_DB ==="
-$PYTHON - "$NEW_DB" "$EXPORT_DIR" "$IMPORT_MEMORY_LIMIT" <<'PY'
+"$PYTHON" - "$NEW_DB" "$EXPORT_DIR" "$IMPORT_MEMORY_LIMIT" <<'PY'
 import sys
 
 import duckdb
@@ -138,7 +138,7 @@ finally:
 PY
 
 echo "=== Verify rebuilt database ==="
-$PYTHON - "$NEW_DB" "$COUNTS_FILE" <<'PY'
+"$PYTHON" - "$NEW_DB" "$COUNTS_FILE" <<'PY'
 import json
 import sys
 

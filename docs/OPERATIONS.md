@@ -108,7 +108,7 @@ Read-only task. If it finds problems, open a data-quality repair item; do not
 mutate data from this task.
 
 ```bash
-poetry run python scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json
+.venv/bin/python scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json
 ```
 
 ## Failure Handling

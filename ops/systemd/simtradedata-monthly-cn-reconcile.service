@@ -6,4 +6,4 @@ Type=oneshot
 User=ubuntu
 EnvironmentFile=-/etc/simtradedata.env
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/bin/bash -lc 'cd "$${SIMTRADE_DATA_DIR:?Set SIMTRADE_DATA_DIR in /etc/simtradedata.env}" && exec poetry run python scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json'
+ExecStart=/usr/bin/bash -lc 'cd "$${SIMTRADE_DATA_DIR:?Set SIMTRADE_DATA_DIR in /etc/simtradedata.env}" && exec ".venv/bin/python" scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json'

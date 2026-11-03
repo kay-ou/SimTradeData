@@ -8,9 +8,9 @@ full index day files (sh000300.day etc.) from the TDX vipdoc package into the
 benchmark table and the stocks-table index rows.
 
 Usage:
-    poetry run python scripts/repair_cn_benchmark.py
-    poetry run python scripts/repair_cn_benchmark.py --file data/downloads/hsjday.zip
-    poetry run python scripts/repair_cn_benchmark.py --skip-download
+    uv run python scripts/repair_cn_benchmark.py
+    uv run python scripts/repair_cn_benchmark.py --file data/downloads/hsjday.zip
+    uv run python scripts/repair_cn_benchmark.py --skip-download
 """
 
 import argparse

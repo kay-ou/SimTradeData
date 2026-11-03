@@ -34,6 +34,8 @@ fi
 MARKET="$(echo "${MARKET:-cn}" | tr '[:upper:]' '[:lower:]')"
 PUBLISH_TARGETS="${PUBLISH_TARGETS:-github}"
 SIMTRADE_DATA_DIR="${SIMTRADE_DATA_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+PYTHON="${PYTHON:-$SIMTRADE_DATA_DIR/.venv/bin/python}"
+export PYTHON
 COS_BUCKET="${COS_BUCKET:-}"
 COS_REGION="${COS_REGION:-}"
 COS_KEY_PREFIX="${COS_KEY_PREFIX:-}"
@@ -108,9 +110,9 @@ tracks_local_release_version() {
 
 run_download() {
   if [[ "$MARKET" == "us" ]]; then
-    poetry run python scripts/download_us.py
+    "$PYTHON" scripts/download_us.py
   else
-    poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-bonus-fix
+    "$PYTHON" scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-bonus-fix
   fi
 }
 
@@ -121,7 +123,7 @@ run_pre_release_integrity() {
 
   PRE_RELEASE_INTEGRITY_REPORT="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_${MARKET}_pre_release_integrity.json"
   log "--- Running pre-release integrity gate ---"
-  if poetry run python scripts/check_integrity.py \
+  if "$PYTHON" scripts/check_integrity.py \
     --db-path "$DUCKDB_FILE" \
     --market "$MARKET" \
     --target-date "$NEW_VERSION" \
@@ -138,7 +140,7 @@ run_pre_release_integrity() {
 get_version() {
   local market="$1"
   cd "$SIMTRADE_DATA_DIR"
-  poetry run python -c "
+  "$PYTHON" -c "
 import duckdb
 from pathlib import Path
 from simtradedata.utils.paths import DATA_PATH
@@ -299,7 +301,7 @@ fi
 # 6. Freshness gate: verify exported manifest version matches DB
 MANIFEST_FILE="$SIMTRADE_DATA_DIR/data/export/$MARKET/manifest.json"
 if [[ -f "$MANIFEST_FILE" ]]; then
-  MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('$MANIFEST_FILE')).get('version',''))")
+  MANIFEST_VERSION=$("$PYTHON" -c "import json; print(json.load(open('$MANIFEST_FILE')).get('version',''))")
   if [[ "$MANIFEST_VERSION" != "$NEW_VERSION" ]]; then
     alert "Freshness FAILED: manifest=${MANIFEST_VERSION}, db=${NEW_VERSION}"
     cleanup
@@ -315,7 +317,7 @@ fi
 if [[ "$INTEGRITY_STRICT" == "1" ]]; then
   INTEGRITY_REPORT="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_${MARKET}_post_release_integrity.json"
   log "--- Running post-release integrity gate ---"
-  if ! poetry run python scripts/check_integrity.py \
+  if ! "$PYTHON" scripts/check_integrity.py \
     --db-path "$DUCKDB_FILE" \
     --market "$MARKET" \
     --target-date "$NEW_VERSION" \

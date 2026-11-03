@@ -25,7 +25,7 @@ tasks:
     trigger: systemd timer template; enable manually after validation
     systemd_timer: simtradedata-weekly-cn-quality-repair.timer
     systemd_service: simtradedata-weekly-cn-quality-repair.service
-    command: cd "$SIMTRADE_DATA_DIR" && poetry run python scripts/download.py --source mootdx --skip-mootdx-ohlcv
+    command: cd "$SIMTRADE_DATA_DIR" && .venv/bin/python scripts/download.py --source mootdx --skip-mootdx-ohlcv
     working_directory: $SIMTRADE_DATA_DIR
     logs: $SIMTRADE_DATA_DIR/logs/quality
     may_contact_baostock: true
@@ -42,7 +42,7 @@ tasks:
     trigger: systemd timer template; enable manually after validation
     systemd_timer: simtradedata-monthly-cn-reconcile.timer
     systemd_service: simtradedata-monthly-cn-reconcile.service
-    command: cd "$SIMTRADE_DATA_DIR" && poetry run python scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json
+    command: cd "$SIMTRADE_DATA_DIR" && .venv/bin/python scripts/check_integrity.py --market cn --strict --json-output logs/validation/monthly_cn_reconcile.json
     working_directory: $SIMTRADE_DATA_DIR
     logs: $SIMTRADE_DATA_DIR/logs/validation
     may_contact_baostock: false

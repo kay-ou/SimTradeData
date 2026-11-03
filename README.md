@@ -8,7 +8,7 @@ English | [中文](README_zh.md) | [Deutsch](README_de.md)
 [![DuckDB](https://img.shields.io/badge/Storage-DuckDB-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
 [![Parquet](https://img.shields.io/badge/Export-Parquet-50ABF1)](https://parquet.apache.org/)
 [![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
-[![Poetry](https://img.shields.io/badge/Packaging-Poetry-60A5FA?logo=poetry&logoColor=white)](https://python-poetry.org/)
+[![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
 
 > **BaoStock + Mootdx + EastMoney + yfinance Multi-Source** | **China A-Shares + US Stocks** | **PTrade Compatible** | **DuckDB + Parquet Storage**
 
@@ -80,7 +80,7 @@ data/
 ## Prerequisites
 
 - **Python**: 3.10 or higher
-- **Poetry**: [Installation guide](https://python-poetry.org/docs/#installation)
+- **uv**: [Installation guide](https://docs.astral.sh/uv/getting-started/installation/)
 - **Network**: Required for downloading data from BaoStock/Mootdx/EastMoney/yfinance (China mainland network recommended for A-share data)
 
 ## Quick Start
@@ -112,10 +112,7 @@ git clone https://github.com/kay-ou/SimTradeData.git
 cd SimTradeData
 
 # Install dependencies
-poetry install
-
-# Activate virtual environment
-poetry shell
+uv sync
 ```
 
 #### 2. Download Data
@@ -129,25 +126,25 @@ A single command downloads all data, using the TDX daily package for the fast OH
 # TDX: OHLCV full history and daily package import
 # Mootdx: corporate actions, bulk financials, trading calendar, benchmark index
 # BaoStock: valuation metrics, ST/suspension status, index constituents
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # Fallback full orchestration without the TDX package
-poetry run python scripts/download.py
+uv run python scripts/download.py
 
 # Use an already-downloaded TDX ZIP file
-poetry run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
 
 # Check data status
-poetry run python scripts/download.py --status
+uv run python scripts/download.py --status
 
 # Skip financial data (faster)
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
 
 # Run Mootdx phase only
-poetry run python scripts/download.py --source mootdx
+uv run python scripts/download.py --source mootdx
 
 # Run BaoStock phase only
-poetry run python scripts/download.py --source baostock
+uv run python scripts/download.py --source baostock
 ```
 
 **Data Source Division of Labor**
@@ -168,23 +165,23 @@ poetry run python scripts/download.py --source baostock
 
 ```bash
 # BaoStock (includes valuation data, but slower)
-poetry run python scripts/download_efficient.py
-poetry run python scripts/download_efficient.py --skip-fundamentals
-poetry run python scripts/download_efficient.py --valuation-only  # Valuation + status only
+uv run python scripts/download_efficient.py
+uv run python scripts/download_efficient.py --skip-fundamentals
+uv run python scripts/download_efficient.py --valuation-only  # Valuation + status only
 
 # Mootdx (faster, but no valuation data)
-poetry run python scripts/download_mootdx.py
-poetry run python scripts/download_mootdx.py --skip-fundamentals
+uv run python scripts/download_mootdx.py
+uv run python scripts/download_mootdx.py --skip-fundamentals
 ```
 
 **EastMoney Complementary Data (Money Flow, Dragon Tiger Board, Margin Trading)**
 
 ```bash
 # Download last 30 days of complementary data (requires existing market data)
-poetry run python scripts/download_daily_extras.py
+uv run python scripts/download_daily_extras.py
 
 # Specify number of days (LHB API only retains ~30 days, run regularly)
-poetry run python scripts/download_daily_extras.py --days 7
+uv run python scripts/download_daily_extras.py --days 7
 ```
 
 **US Stock Data (yfinance)**
@@ -193,16 +190,16 @@ Free US stock data via yfinance, no API key required:
 
 ```bash
 # Full download (6,000+ US stocks with OHLCV + financials + valuation + metadata)
-poetry run python scripts/download_us.py
+uv run python scripts/download_us.py
 
 # Specific symbols (small-scale testing)
-poetry run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
+uv run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
 
 # Market data only (skip time-consuming per-stock financials and metadata)
-poetry run python scripts/download_us.py --skip-fundamentals --skip-metadata
+uv run python scripts/download_us.py --skip-fundamentals --skip-metadata
 
 # Specify start date
-poetry run python scripts/download_us.py --start-date 2020-01-01
+uv run python scripts/download_us.py --start-date 2020-01-01
 ```
 
 US stock ticker format: `AAPL.US` (consistent with A-shares `600000.SS` using `{code}.{market}`), stored in a separate database `data/us.duckdb`.
@@ -211,26 +208,26 @@ US stock ticker format: `AAPL.US` (consistent with A-shares `600000.SS` using `{
 
 ```bash
 # Auto-download official TDX Shanghai/Shenzhen/Beijing daily data package (~500MB)
-poetry run python scripts/download_tdx_day.py
+uv run python scripts/download_tdx_day.py
 
 # Force re-download
-poetry run python scripts/download_tdx_day.py --force-download
+uv run python scripts/download_tdx_day.py --force-download
 
 # Use an already-downloaded file
-poetry run python scripts/download_tdx_day.py --file hsjday.zip
+uv run python scripts/download_tdx_day.py --file hsjday.zip
 ```
 
 #### 3. Export to Parquet
 
 ```bash
 # Export A-shares → data/export/cn/
-poetry run python scripts/export_parquet.py
+uv run python scripts/export_parquet.py
 
 # Export US stocks → data/export/us/
-poetry run python scripts/export_parquet.py --market us
+uv run python scripts/export_parquet.py --market us
 
 # Custom output directory
-poetry run python scripts/export_parquet.py --market cn --output /custom/path
+uv run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
 #### 4. Publish Data (Maintainer)
@@ -423,14 +420,14 @@ BATCH_SIZE = 20
 
 ```bash
 # 1. Incremental download (fetches only new data, automatically skips existing)
-poetry run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # 2. Export a full Parquet snapshot (replaces the output directory)
-poetry run python scripts/export_parquet.py              # CN → data/export/cn/
-poetry run python scripts/export_parquet.py --market us  # US → data/export/us/
+uv run python scripts/export_parquet.py              # CN → data/export/cn/
+uv run python scripts/export_parquet.py --market us  # US → data/export/us/
 
 # 3. Maintainers only: export a standalone delta package
-poetry run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
+uv run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
 ```
 
 Step 1 imports the latest TDX daily package, skips Mootdx OHLCV after that fast path, and refreshes the remaining Mootdx/BaoStock datasets. When there are no new trading days, existing rows are skipped quickly.
@@ -454,13 +451,13 @@ The integrity gate verifies that active stocks have latest market and valuation 
 
 ```bash
 # Unit tests (no network required)
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 
 # SmartRouter routing and fallback tests
-poetry run pytest tests/router/ -v
+uv run pytest tests/router/ -v
 
 # SmartRouter live integration test (requires network)
-poetry run python scripts/test_smart_router_live.py
+uv run python scripts/test_smart_router_live.py
 ```
 
 ## Version History

@@ -16,7 +16,13 @@ The service templates run their scripts with the repository's `.venv/bin/python`
 
 ```bash
 cd /path/to/SimTradeData
-uv sync --frozen --no-dev
+scripts/sync_env.sh
+```
+
+On hosts that cannot reach pypi.org, point the script at a reachable index:
+
+```bash
+UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple scripts/sync_env.sh
 ```
 
 Install the daily timer:

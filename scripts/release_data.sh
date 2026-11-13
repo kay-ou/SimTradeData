@@ -25,7 +25,9 @@ COS_BUCKET="${COS_BUCKET:-}"
 COS_REGION="${COS_REGION:-}"
 COS_KEY_PREFIX="${COS_KEY_PREFIX:-}"
 LOCAL_RELEASE_DIR="${LOCAL_RELEASE_DIR:-$PROJECT_ROOT/data/releases}"
-MAX_RELEASES="${MAX_RELEASES:-10}"   # 只保留近 10 个 data-cn 归档（基线 + delta），控制存储费用
+MAX_BASELINES="${MAX_BASELINES:-3}"  # releases.json 每个市场保留的 baseline 数，控制全量包存储
+MAX_DELTAS="${MAX_DELTAS:-60}"       # releases.json 每个市场保留的 delta 数（约 60 个交易日）
+COS_RETENTION_ARGS=(--max-baselines "$MAX_BASELINES" --max-deltas "$MAX_DELTAS")
 GITHUB_RELEASE_KEEP="${GITHUB_RELEASE_KEEP:-3}"  # GitHub 只保留近 N 个全量 data release，控制仓库空间
 
 # ── Parse arguments ─────────────────────────────────────────────────
@@ -112,10 +114,11 @@ raise SystemExit(0 if base.isoformat() == base_value and target.isoformat() == t
 }
 
 prune_local_archives() {
-  # 只保留近 MAX_RELEASES 个本地 data 归档；floor 历史基准包（data-*-floor-*）永久保留
+  # delta 归档全部保留；baseline 只保留近 MAX_BASELINES 个；floor 历史基准包永久保留
   find "$LOCAL_RELEASE_DIR" -maxdepth 1 -name "data-${market}-*.tar.gz" \
     ! -name "data-${market}-*-floor-*" \
-    | sort -r | tail -n +"$((MAX_RELEASES + 1))" | while IFS= read -r path; do
+    ! -name "data-${market}-*-to-*-delta.tar.gz" \
+    | sort -r | tail -n +"$((MAX_BASELINES + 1))" | while IFS= read -r path; do
     rm -f "$path"
     echo "  Pruned old local archive: $(basename "$path")"
   done
@@ -208,7 +211,7 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
     cp "$archive" "$local_archive" || local_ok=false
     if $local_ok; then
       echo "  -> $local_archive"
-      # 只保留近 MAX_RELEASES 个 data-cn 归档；floor 历史基准包（data-cn-*-floor-*）永久保留
+      # delta 归档全部保留；baseline 只保留近 MAX_BASELINES 个；floor 历史基准包永久保留
       prune_local_archives
     else
       echo "  ERROR: local publish failed"
@@ -313,7 +316,7 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
           --bucket "$COS_BUCKET" \
           --region "$COS_REGION" \
           --key-prefix "$COS_KEY_PREFIX" \
-          --max-releases "$MAX_RELEASES"; then
+          "${COS_RETENTION_ARGS[@]}"; then
         if $delta_uploaded; then
           run_cos_upload \
             --index-only \
@@ -322,7 +325,7 @@ print(f"{digest.hexdigest()}  {sys.argv[2]}")' "$archive" "$archive_name" > "$ch
             --bucket "$COS_BUCKET" \
             --region "$COS_REGION" \
             --key-prefix "$COS_KEY_PREFIX" \
-            --max-releases "$MAX_RELEASES" || cos_ok=false
+            "${COS_RETENTION_ARGS[@]}" || cos_ok=false
         fi
       elif $cos_mutation_allowed; then
         cos_ok=false

@@ -115,7 +115,14 @@ def test_update_releases_index_does_not_put_when_strict_fetch_fails(
     )
 
     assert cos_upload._update_releases_index(
-        "bucket", "region", "sid", "skey", "tag", {"tag_name": "tag"}, 30
+        "bucket",
+        "region",
+        "sid",
+        "skey",
+        "tag",
+        {"tag_name": "tag"},
+        max_baselines=3,
+        max_deltas=30,
     ) is False
     assert put_calls == []
     assert capsys.readouterr().err.startswith("ERROR:")
@@ -123,7 +130,7 @@ def test_update_releases_index_does_not_put_when_strict_fetch_fails(
 
 def test_release_data_prefers_sdk_capable_python_for_cos_upload():
     release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
-    source = release_script.read_text()
+    source = release_script.read_text(encoding="utf-8")
 
     assert "COS_UPLOAD_PYTHON" in source
     assert "sys.version_info >= (3, 10)" in source
@@ -190,7 +197,7 @@ def test_baseline_manifest_preserves_tag_and_asset_and_adds_release_metadata(
     monkeypatch.setattr(
         cos_upload,
         "_update_releases_index",
-        lambda bucket, region, secret_id, secret_key, tag, entry, max_releases: releases.append(
+        lambda bucket, region, secret_id, secret_key, tag, entry, max_baselines, max_deltas: releases.append(
             {"tag": tag, "entry": entry}
         )
         or True,
@@ -247,7 +254,7 @@ def test_delta_manifest_uses_version_range_for_tag_and_release_metadata(
     monkeypatch.setattr(
         cos_upload,
         "_update_releases_index",
-        lambda bucket, region, secret_id, secret_key, tag, entry, max_releases: releases.append(
+        lambda bucket, region, secret_id, secret_key, tag, entry, max_baselines, max_deltas: releases.append(
             {"tag": tag, "entry": entry}
         )
         or True,
@@ -520,7 +527,7 @@ def test_upload_phase_flags_separate_archive_and_index_updates(
     monkeypatch.setattr(
         cos_upload,
         "_update_releases_index",
-        lambda bucket, region, secret_id, secret_key, tag, entry, max_releases: indexes.append(
+        lambda bucket, region, secret_id, secret_key, tag, entry, max_baselines, max_deltas: indexes.append(
             tag
         )
         or True,
@@ -548,17 +555,80 @@ def test_upload_phase_flags_separate_archive_and_index_updates(
     assert indexes == expected_indexes
 
 
-def test_release_data_limits_cos_retention_to_max_releases():
+def test_release_data_limits_cos_retention_by_release_type():
     release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
-    source = release_script.read_text()
+    source = release_script.read_text(encoding="utf-8")
 
-    assert 'MAX_RELEASES="${MAX_RELEASES:-10}"' in source
-    assert '--max-releases "$MAX_RELEASES"' in source
+    assert 'MAX_BASELINES="${MAX_BASELINES:-3}"' in source
+    assert 'MAX_DELTAS="${MAX_DELTAS:-60}"' in source
+    assert (
+        'COS_RETENTION_ARGS=(--max-baselines "$MAX_BASELINES" --max-deltas "$MAX_DELTAS")'
+        in source
+    )
+    assert '"${COS_RETENTION_ARGS[@]}"' in source
+    assert '! -name "data-${market}-*-to-*-delta.tar.gz"' in source
+
+
+def test_releases_index_trims_per_market_and_release_type(monkeypatch):
+    cos_upload = _load_cos_upload()
+    releases = (
+        [
+            {"tag_name": f"cn-delta-{index}", "release_type": "delta", "market": "cn"}
+            for index in range(4)
+        ]
+        + [
+            {"tag_name": f"us-delta-{index}", "release_type": "delta", "market": "us"}
+            for index in range(4)
+        ]
+        + [
+            {
+                "tag_name": f"cn-baseline-{index}",
+                "release_type": "baseline",
+                "market": "cn",
+            }
+            for index in range(3)
+        ]
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        cos_upload, "_fetch_releases_json", lambda *args, **kwargs: list(releases)
+    )
+    monkeypatch.setattr(
+        cos_upload,
+        "_put_releases_json",
+        lambda bucket, region, rows, secret_id, secret_key: captured.setdefault(
+            "releases", rows
+        )
+        or True,
+    )
+
+    assert cos_upload._update_releases_index(
+        "bucket",
+        "region",
+        "sid",
+        "skey",
+        "new-cn-delta",
+        {"tag_name": "new-cn-delta", "release_type": "delta", "market": "cn"},
+        max_baselines=2,
+        max_deltas=3,
+    )
+    kept = captured["releases"]
+    assert [row["tag_name"] for row in kept] == [
+        "new-cn-delta",
+        "cn-delta-0",
+        "cn-delta-1",
+        "us-delta-0",
+        "us-delta-1",
+        "us-delta-2",
+        "cn-baseline-0",
+        "cn-baseline-1",
+    ]
 
 
 def test_release_data_publishes_cos_delta_before_baseline():
     release_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
-    source = release_script.read_text()
+    source = release_script.read_text(encoding="utf-8")
 
     lookup = '--print-latest-version --market "$market"'
     export = 'scripts/api_export_delta.py --market "$market" --last-sync "$cos_base_version"'
@@ -616,7 +686,7 @@ def _run_release_script(
     bin_dir.mkdir()
     source_script = Path(__file__).resolve().parents[1] / "scripts" / "release_data.sh"
     release_script = scripts / "release_data.sh"
-    release_script.write_text(source_script.read_text())
+    release_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
 
     _write_executable(
         bin_dir / "fake-python",
@@ -948,96 +1018,6 @@ def test_release_script_delta_index_failure_keeps_baseline_published_but_fails(
     assert not archive_dir.exists()
 
 
-def test_update_releases_index_drops_dangling_delta_after_trim(monkeypatch, capsys):
-    cos_upload = _load_cos_upload()
-    releases = [
-        {
-            "tag_name": "data-cn-2026-06-10",
-            "release_type": "baseline",
-            "target_version": "2026-06-10",
-        },
-        {
-            "tag_name": "data-cn-2026-06-11-to-2026-06-12-delta",
-            "release_type": "delta",
-            "base_version": "2026-06-11",
-            "target_version": "2026-06-12",
-        },
-        {
-            "tag_name": "data-cn-2026-06-12",
-            "release_type": "baseline",
-            "target_version": "2026-06-12",
-        },
-    ]
-    put_calls = []
-    monkeypatch.setattr(cos_upload, "_fetch_releases_json", lambda *a, **k: releases)
-    monkeypatch.setattr(
-        cos_upload, "_put_releases_json", lambda *a: put_calls.append(a) or True
-    )
-    entry = {
-        "tag_name": "data-cn-2026-06-13",
-        "release_type": "baseline",
-        "target_version": "2026-06-13",
-    }
-
-    assert (
-        cos_upload._update_releases_index(
-            "bucket", "region", "sid", "skey", entry["tag_name"], entry, 3
-        )
-        is True
-    )
-
-    final = put_calls[0][2]
-    assert [r["tag_name"] for r in final] == [
-        "data-cn-2026-06-13",
-        "data-cn-2026-06-10",
-    ]
-    assert "Dropped 1 dangling delta" in capsys.readouterr().out
-
-
-def test_update_releases_index_keeps_delta_with_surviving_base(monkeypatch):
-    cos_upload = _load_cos_upload()
-    releases = [
-        {
-            "tag_name": "data-cn-2026-06-11",
-            "release_type": "baseline",
-            "target_version": "2026-06-11",
-        },
-        {
-            "tag_name": "data-cn-2026-06-11-to-2026-06-12-delta",
-            "release_type": "delta",
-            "base_version": "2026-06-11",
-            "target_version": "2026-06-12",
-        },
-        {
-            "tag_name": "data-cn-2026-06-12",
-            "release_type": "baseline",
-            "target_version": "2026-06-12",
-        },
-    ]
-    put_calls = []
-    monkeypatch.setattr(cos_upload, "_fetch_releases_json", lambda *a, **k: releases)
-    monkeypatch.setattr(
-        cos_upload, "_put_releases_json", lambda *a: put_calls.append(a) or True
-    )
-    entry = {
-        "tag_name": "data-cn-2026-06-13",
-        "release_type": "baseline",
-        "target_version": "2026-06-13",
-    }
-
-    cos_upload._update_releases_index(
-        "bucket", "region", "sid", "skey", entry["tag_name"], entry, 10
-    )
-
-    final = put_calls[0][2]
-    assert [r["tag_name"] for r in final] == [
-        "data-cn-2026-06-13",
-        "data-cn-2026-06-11",
-        "data-cn-2026-06-11-to-2026-06-12-delta",
-        "data-cn-2026-06-12",
-    ]
-
-
 def test_prune_orphans_deletes_only_unreferenced_old_archives(monkeypatch):
     cos_upload = _load_cos_upload()
     now = cos_upload.dt.datetime.now(cos_upload.dt.timezone.utc)
@@ -1123,7 +1103,6 @@ def test_prune_orphans_deletes_only_unreferenced_old_archives(monkeypatch):
     ]
     assert deleted_keys == [
         "data-cn-2026-06-26.tar.gz",
-        "data-cn-2026-06-25-to-2026-06-26-delta.tar.gz",
         "data-cn-2026-09-02-floor-20050509.tar.gz",
     ]
 

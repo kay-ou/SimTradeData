@@ -339,9 +339,16 @@ def _update_releases_index(
     secret_key: str,
     tag: str,
     entry: dict,
-    max_releases: int,
+    max_baselines: int,
+    max_deltas: int,
 ) -> bool:
-    """Fetch releases.json, prepend a new entry, trim old ones, and upload.
+    """Fetch releases.json, prepend a new entry, trim per market and type, and upload.
+
+    Baseline and delta entries are trimmed independently for each market: full
+    baselines are large, while deltas are small and form the incremental chain
+    that lets clients upgrade from older versions. Keeping a long delta window
+    without keeping every baseline avoids both a short chain and unbounded
+    storage.
 
     Returns True on success.
     """
@@ -359,24 +366,20 @@ def _update_releases_index(
     # Prepend new entry
     releases.insert(0, entry)
 
-    # Trim old entries
-    if len(releases) > max_releases:
-        trimmed = len(releases) - max_releases
-        releases = releases[:max_releases]
-        print(f"  Trimmed {trimmed} old releases")
-
-    # Drop any delta whose base baseline was trimmed away (dangling chain)
-    baseline_versions = {
-        r.get("target_version") for r in releases if r.get("release_type") == "baseline"
-    }
-    kept = [
-        r
-        for r in releases
-        if r.get("release_type") != "delta"
-        or r.get("base_version") in baseline_versions
-    ]
+    limits = {"baseline": max_baselines, "delta": max_deltas}
+    used: dict[tuple[str, str], int] = {}
+    kept = []
+    for release in releases:
+        release_type = release.get("release_type")
+        if release_type in limits:
+            market = str(release.get("market") or "").lower()
+            key = (market, release_type)
+            if used.get(key, 0) >= limits[release_type]:
+                continue
+            used[key] = used.get(key, 0) + 1
+        kept.append(release)
     if len(kept) != len(releases):
-        print(f"  Dropped {len(releases) - len(kept)} dangling delta release(s)")
+        print(f"  Trimmed {len(releases) - len(kept)} old release(s)")
         releases = kept
 
     return _put_releases_json(bucket, region, releases, secret_id, secret_key)
@@ -401,12 +404,15 @@ def _prune_orphans(
     key_prefix: str,
     max_age_hours: int,
 ) -> None:
-    """Delete data archives that releases.json no longer references.
+    """Delete baseline archives that releases.json no longer references.
 
     Only objects directly under ``key_prefix`` whose name matches the data
     archive pattern are considered, and only those older than ``max_age_hours``
-    (a safety window against concurrent publishes). ``releases.json`` itself,
-    installer packages, and strategy-package uploads are never touched.
+    (a safety window against concurrent publishes). Delta archives are always
+    kept: they are small, invisible to clients unless indexed, and deleting
+    them would make the historical incremental chain impossible to rebuild.
+    ``releases.json`` itself, installer packages, and strategy-package uploads
+    are never touched.
     """
     try:
         from qcloud_cos import CosConfig, CosS3Client
@@ -431,7 +437,12 @@ def _prune_orphans(
     orphans: list[tuple[str, int]] = []
     marker = ""
     while True:
-        resp = client.list_objects(Bucket=bucket, Marker=marker, MaxKeys=1000)
+        resp = client.list_objects(
+            Bucket=bucket,
+            Prefix=prefix + "/" if prefix else "",
+            Marker=marker,
+            MaxKeys=1000,
+        )
         contents = resp.get("Contents", [])
         for obj in contents:
             key = obj["Key"]
@@ -443,6 +454,8 @@ def _prune_orphans(
             if "/" in rel or not _DATA_ARCHIVE_RE.fullmatch(rel):
                 continue
             if rel in keep:
+                continue
+            if rel.endswith("-delta.tar.gz"):
                 continue
             if _parse_cos_timestamp(obj["LastModified"]) >= cutoff:
                 continue
@@ -514,12 +527,18 @@ def main():
         help="COS key prefix / directory (e.g. 'data/')",
     )
     parser.add_argument(
-        "--max-releases", type=int, default=120,
+        "--max-baselines", type=int, default=3,
         help=(
-            "Keep at most this many releases in releases.json (default: 120). "
-            "Each delta needs every intermediate release in its chain; too short "
-            "a window breaks the chain and forces older clients back to a full "
-            "download."
+            "Keep at most this many baseline releases in releases.json "
+            "(default: 3). Baselines are large; only a few are needed."
+        ),
+    )
+    parser.add_argument(
+        "--max-deltas", type=int, default=60,
+        help=(
+            "Keep at most this many delta releases in releases.json "
+            "(default: 60). Deltas are small and form the incremental chain; "
+            "too short a window forces older clients back to a full download."
         ),
     )
     args = parser.parse_args()
@@ -641,7 +660,7 @@ def main():
         )
         if not _update_releases_index(
             args.bucket, args.region, secret_id, secret_key,
-            tag, entry, args.max_releases,
+            tag, entry, args.max_baselines, args.max_deltas,
         ):
             sys.exit(1)
 

@@ -59,6 +59,14 @@ entry are then published; only after that succeeds is the delta entry added to
 `releases.json`. This ordering prevents clients from discovering a delta whose
 target baseline was not published successfully.
 
+Retention is per market and split by release type: `releases.json` keeps the
+most recent 3 baselines (`MAX_BASELINES`) and 60 deltas (`MAX_DELTAS`) for each
+market. Baselines only serve full-download fallback; incremental upgrade
+eligibility is determined by the delta window plus the client budget (20
+packages or 60% of the full archive size). Delta archives are never pruned from
+COS, so delta edges remain available for audit or manual recovery; only
+unreferenced baseline archives are removed.
+
 ## Status Check
 
 From the repository root:

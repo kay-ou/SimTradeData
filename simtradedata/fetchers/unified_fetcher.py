@@ -12,7 +12,7 @@ import time
 import baostock as bs
 import pandas as pd
 
-from simtradedata.fetchers.baostock_fetcher import BaoStockFetcher
+from simtradedata.fetchers.baostock_fetcher import BaoStockFetcher, read_baostock_result
 from simtradedata.utils.code_utils import convert_from_ptrade_code
 from simtradedata.config.field_mappings import MARKET_FIELD_MAP
 
@@ -220,7 +220,7 @@ class UnifiedDataFetcher(BaoStockFetcher):
 
                 # Parse data
                 try:
-                    df_result = rs.get_data()
+                    df_result = read_baostock_result(rs)
                 except UnicodeDecodeError as e:
                     delay = RETRY_BASE_DELAY * (2 ** attempt)
                     logger.warning(
@@ -316,7 +316,7 @@ class UnifiedDataFetcher(BaoStockFetcher):
                     f"Failed to query index data for {index_code}: {rs.error_msg}"
                 )
 
-            df = rs.get_data()
+            df = read_baostock_result(rs)
 
         if df.empty:
             logger.info(f"No index data for {index_code} (may be unavailable for date range)")

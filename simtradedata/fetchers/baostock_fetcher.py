@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 _BAOSTOCK_RETRY = RetryConfig(max_retries=2, base_delay=1.0)
 
 
+def read_baostock_result(rs) -> pd.DataFrame:
+    """Read all pages without BaoStock's pandas-incompatible get_data()."""
+    rows = []
+    while rs.error_code == "0" and rs.next():
+        rows.append(rs.get_row_data())
+    if rs.error_code != "0":
+        raise RuntimeError(f"Failed to read BaoStock result: {rs.error_msg}")
+    return pd.DataFrame(rows, columns=rs.fields)
+
+
 class BaoStockFetcher(BaseFetcher):
     """
     Fetch data from BaoStock API
@@ -100,7 +110,7 @@ class BaoStockFetcher(BaseFetcher):
                 f"Failed to query adjust factor for {symbol}: {rs.error_msg}"
             )
 
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             # Check if it's an index (indices don't have adjust factors)
@@ -152,7 +162,7 @@ class BaoStockFetcher(BaseFetcher):
                 f"Failed to query stock basic info for {symbol}: {rs.error_msg}"
             )
 
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             return pd.DataFrame()
@@ -180,7 +190,7 @@ class BaoStockFetcher(BaseFetcher):
         if rs.error_code != "0":
             raise RuntimeError(f"Failed to query industry for {symbol}: {rs.error_msg}")
 
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             logger.warning(f"No industry data for {symbol}")
@@ -206,7 +216,7 @@ class BaoStockFetcher(BaseFetcher):
         if rs.error_code != "0":
             raise RuntimeError(f"Failed to query trade calendar: {rs.error_msg}")
 
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             return pd.DataFrame()
@@ -252,7 +262,7 @@ class BaoStockFetcher(BaseFetcher):
                 f"Failed to query index stocks for {index_code}: {rs.error_msg}"
             )
 
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             logger.warning(f"No constituent stocks found for {index_code}")
@@ -298,7 +308,7 @@ class BaoStockFetcher(BaseFetcher):
         for api_func in api_calls:
             rs = api_func(code=bs_code, year=year, quarter=quarter)
             if rs.error_code == "0":
-                df = rs.get_data()
+                df = read_baostock_result(rs)
                 if not df.empty:
                     dfs.append(df)
 
@@ -414,8 +424,7 @@ class BaoStockFetcher(BaseFetcher):
                 f"Failed to query dividend data for {symbol} year {year}: {rs.error_msg}"
             )
 
-        # Use get_data() instead of iterating with next()
-        df = rs.get_data()
+        df = read_baostock_result(rs)
 
         if df.empty:
             logger.debug(f"No dividend data for {symbol} year {year}")

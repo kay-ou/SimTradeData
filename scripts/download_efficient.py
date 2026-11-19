@@ -22,7 +22,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from simtradedata.config.field_mappings import BENCHMARK_CONFIG
-from simtradedata.fetchers.baostock_fetcher import BaoStockFetcher
+from simtradedata.fetchers.baostock_fetcher import BaoStockFetcher, read_baostock_result
 from simtradedata.fetchers.unified_fetcher import UnifiedDataFetcher
 from simtradedata.processors.data_splitter import DataSplitter
 from simtradedata.utils.process_lock import ProcessLock
@@ -328,7 +328,7 @@ class EfficientBaoStockDownloader:
             logger.warning("Failed to refresh stock status %s: %s", target_date, rs.error_msg)
             return
 
-        stocks_df = rs.get_data()
+        stocks_df = read_baostock_result(rs)
         if stocks_df.empty:
             logger.warning("No stock status data for %s", target_date)
             return
@@ -557,7 +557,7 @@ def download_all_data(
                     try:
                         rs = bs.query_all_stock(day=date_str)
                         if rs.error_code == "0":
-                            stocks_df = rs.get_data()
+                            stocks_df = read_baostock_result(rs)
                             if not stocks_df.empty:
                                 codes = [convert_to_ptrade_code(c, "baostock")
                                          for c in stocks_df["code"].tolist()]

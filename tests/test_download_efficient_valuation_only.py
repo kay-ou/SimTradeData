@@ -1,4 +1,5 @@
 import pandas as pd
+from baostock.data.resultset import ResultData
 
 import scripts.download_efficient as download_efficient
 from scripts.download_efficient import EfficientBaoStockDownloader
@@ -56,6 +57,7 @@ def make_valuation_only_downloader(split_data):
     downloader.writer = FakeWriter()
     downloader.unified_fetcher = FakeFetcher()
     downloader.data_splitter = FakeSplitter(split_data)
+    downloader._metadata_blocks_missing = lambda symbol: False
     return downloader
 
 
@@ -150,18 +152,16 @@ def test_status_aggregation_groups_symbols_by_date_once():
 
 
 def test_refresh_daily_stock_status_writes_target_day_halt_and_st(monkeypatch):
-    class FakeResult:
-        error_code = "0"
-        error_msg = ""
-
-        def get_data(self):
-            return pd.DataFrame(
-                {
-                    "code": ["sz.000524", "sz.000638", "sh.600000"],
-                    "tradeStatus": ["0", "1", "1"],
-                    "code_name": ["岭南控股", "*ST万方", "浦发银行"],
-                }
-            )
+    class FakeResult(ResultData):
+        def __init__(self):
+            super().__init__()
+            self.error_code = "0"
+            self.fields = ["code", "tradeStatus", "code_name"]
+            self.data = [
+                ["sz.000524", "0", "岭南控股"],
+                ["sz.000638", "1", "*ST万方"],
+                ["sh.600000", "1", "浦发银行"],
+            ]
 
     monkeypatch.setattr(
         download_efficient.bs,
@@ -179,18 +179,15 @@ def test_refresh_daily_stock_status_writes_target_day_halt_and_st(monkeypatch):
 
 
 def test_refresh_daily_stock_status_clears_empty_target_day_status(monkeypatch):
-    class FakeResult:
-        error_code = "0"
-        error_msg = ""
-
-        def get_data(self):
-            return pd.DataFrame(
-                {
-                    "code": ["sz.000524", "sh.600000"],
-                    "tradeStatus": ["1", "1"],
-                    "code_name": ["岭南控股", "浦发银行"],
-                }
-            )
+    class FakeResult(ResultData):
+        def __init__(self):
+            super().__init__()
+            self.error_code = "0"
+            self.fields = ["code", "tradeStatus", "code_name"]
+            self.data = [
+                ["sz.000524", "1", "岭南控股"],
+                ["sh.600000", "1", "浦发银行"],
+            ]
 
     monkeypatch.setattr(
         download_efficient.bs,

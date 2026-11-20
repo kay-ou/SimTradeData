@@ -81,6 +81,7 @@ data/
 
 - **Python**: 3.10 or higher
 - **uv**: [Installation guide](https://docs.astral.sh/uv/getting-started/installation/)
+- **Local CI only**: Node.js 20+ with npm; no `npm install` is needed
 - **Network**: Required for downloading data from BaoStock/Mootdx/EastMoney/yfinance (China mainland network recommended for A-share data)
 
 ## Quick Start
@@ -169,7 +170,7 @@ uv run python scripts/download_efficient.py
 uv run python scripts/download_efficient.py --skip-fundamentals
 uv run python scripts/download_efficient.py --valuation-only  # Valuation + status only
 
-# Mootdx (faster, but no valuation data)
+# Mootdx extras (corporate actions and bulk financials; OHLCV disabled)
 uv run python scripts/download_mootdx.py
 uv run python scripts/download_mootdx.py --skip-fundamentals
 ```
@@ -322,7 +323,7 @@ SimTradeData/
 from simtradedata.router import SmartRouter
 
 with SmartRouter() as router:
-    # Auto-selects best source: mootdx → eastmoney → baostock
+    # Daily bars use EastMoney first, then BaoStock
     df = router.get_daily_bars("600000.SS", "2024-01-01", "2024-12-31")
 
     # Single-source data also goes through router for unified API
@@ -474,6 +475,10 @@ uv run --frozen python -m scripts.check_data_sources
 # Independently check retained Mootdx interfaces and quarterly report parsing
 uv run --frozen python -m scripts.check_mootdx_interfaces
 ```
+
+The full CI runner uses separate environments under `.venv-ci/`. Test and
+coverage reports are saved in `reports/ci/python-<version>/`, stage results in
+`reports/ci/summary.json`, and distributions in `dist/ci/python-<version>/`.
 
 GitHub Actions runs offline regression tests and package builds on pushes and
 pull requests. A separate scheduled workflow probes each daily-bar provider

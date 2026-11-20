@@ -81,6 +81,7 @@ data/
 
 - **Python**: 3.10 oder höher
 - **uv**: [Installationsanleitung](https://docs.astral.sh/uv/getting-started/installation/)
+- **Nur für lokale CI**: Node.js 20+ mit npm; `npm install` ist nicht erforderlich
 - **Netzwerk**: Zum Herunterladen von Daten erforderlich (für A-Aktien-Daten wird ein chinesisches Festlandnetzwerk empfohlen)
 
 ## Schnellstart
@@ -120,10 +121,10 @@ Ein Befehl lädt alle Daten herunter, nutzt das TDX-Tagespaket für den schnelle
 
 ```bash
 # Tägliche/produktive CN-Aktualisierung (empfohlen)
-uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
-
-# Vollständige Fallback-Orchestrierung ohne TDX-Paket
 uv run python scripts/download.py
+
+# Alte Flags bleiben kompatibel; Paketfehler aktivieren keine Mootdx-Tagesdaten
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # Bereits heruntergeladene TDX-ZIP-Datei verwenden
 uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
@@ -133,6 +134,9 @@ uv run python scripts/download.py --status
 
 # Finanzdaten überspringen (schneller)
 uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
+
+# Nur Mootdx-Zusatzdaten (keine OHLCV-Tagesdaten)
+uv run python scripts/download.py --source mootdx
 ```
 
 **Arbeitsteilung der Datenquellen**
@@ -140,14 +144,18 @@ uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fund
 | Datentyp | Quelle | Grund |
 |----------|--------|-------|
 | OHLCV-Marktdaten (taeglich/Vollhistorie) | TDX-Tagespaket | Am schnellsten, ~500MB Massenimport plus aktuelle Tagesdaten |
-| OHLCV-Marktdaten (Fallback/Backfill) | Mootdx | Fallback pro Symbol, wenn das TDX-Paket nicht verfuegbar ist |
+| OHLCV-Marktdaten (Einzelabfragen) | EastMoney, danach BaoStock | Unabhängige Tagesabfragen; Mootdx-Tagesdaten sind im Standardrouting deaktiviert |
 | Kapitalmaßnahmen (XDXR) | Mootdx | Vollständigere Daten |
 | Massenfinanzdaten | Mootdx | Ein ZIP = alle Aktien |
 | Bewertung KGV/KBV/KUV/Umschlag | BaoStock | Exklusive Daten |
 | ST/Aussetzungsstatus | BaoStock | Exklusive Daten |
 | Indexbestandteile | BaoStock | Exklusive Daten |
-| Handelskalender | Mootdx | Liefert den Boersenkalender |
-| Benchmark-Index | Mootdx | Liefert Benchmark-Zeitreihen |
+| Handelskalender | BaoStock | Unabhängiger Börsenkalender |
+| Benchmark-Index | TDX-Paket / BaoStock | Massenimport / Einzelabfragen |
+
+TDX übernimmt standardmäßig OHLCV, Mootdx Kapitalmaßnahmen und Massenfinanzdaten,
+BaoStock Bewertung, Status, Kalender und Indexabfragen. Ein fehlgeschlagenes
+TDX-Paket löst keinen Rückfall auf Mootdx-Tagesdaten aus.
 
 **US-Aktiendaten (yfinance)**
 
@@ -254,8 +262,33 @@ Endnutzer führen diesen Delta-Befehl nicht aus und wählen keinen Aktualisierun
 ## Tests
 
 ```bash
+# Vollständige lokale CI: Python 3.10 und 3.12, wie in GitHub Actions
+npm run ci:full
+
+# Nur eine Python-Version prüfen
+npm run ci:full -- --python 3.12
+
 uv run pytest tests/ -v
+
+# Offline-Regressionstests ohne Socket-Zugriff
+uv run --frozen pytest tests/ --disable-socket -m "not external and not performance"
+
+# Live-Datenquellen prüfen, einschließlich Aktualität (Netzwerk erforderlich)
+uv run --frozen python -m scripts.check_data_sources
+
+# Verbleibende Mootdx-Schnittstellen und Quartalsberichte unabhängig prüfen
+uv run --frozen python -m scripts.check_mootdx_interfaces
 ```
+
+Die vollständige CI verwendet getrennte Umgebungen unter `.venv-ci/`.
+Test- und Abdeckungsberichte liegen unter `reports/ci/python-<version>/`,
+die Phasenergebnisse in `reports/ci/summary.json` und Pakete unter
+`dist/ci/python-<version>/`.
+
+GitHub Actions führt bei Pushes, Pull Requests und manuellen Aufrufen Offline-Tests
+und Paket-Builds aus. Ein separater Zeitplan prüft die Datenquellen zweimal täglich,
+jeweils ohne Fallback. Berichte, Aktualitätsregeln und Einschränkungen stehen in der
+[Betriebsdokumentation](docs/OPERATIONS.md#ci-and-data-source-monitoring).
 
 ## Verwandte Links
 

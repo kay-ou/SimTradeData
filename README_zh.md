@@ -81,6 +81,7 @@ data/
 
 - **Python**: 3.10 或更高版本
 - **uv**: [安装指南](https://docs.astral.sh/uv/getting-started/installation/)
+- **仅本地 CI 需要**：Node.js 20+ 和 npm；无需运行 `npm install`
 - **网络**: 下载数据需要网络（A 股数据建议使用中国大陆网络）
 
 ## 快速开始
@@ -124,12 +125,12 @@ uv sync
 ```bash
 # 每日/生产 CN 刷新（推荐）
 # TDX: OHLCV 全历史和日线包导入
-# Mootdx: 除权除息、批量财务、交易日历、基准指数
-# BaoStock: 估值指标、ST/停牌状态、指数成分股
-uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
-
-# 不使用 TDX 日线包的完整兜底编排
+# Mootdx: 除权除息、批量财务
+# BaoStock: 估值指标、ST/停牌状态、指数成分股、日历和指数查询
 uv run python scripts/download.py
+
+# 旧参数仍兼容；TDX 包失败不会启用 Mootdx 日线兜底
+uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
 # 使用已下载的 TDX ZIP 文件
 uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
@@ -140,7 +141,7 @@ uv run python scripts/download.py --status
 # 跳过财务数据（更快）
 uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
 
-# 仅运行 Mootdx 阶段
+# 仅运行 Mootdx 补充数据阶段（不下载 OHLCV）
 uv run python scripts/download.py --source mootdx
 
 # 仅运行 BaoStock 阶段
@@ -152,14 +153,14 @@ uv run python scripts/download.py --source baostock
 | 数据类型 | 负责数据源 | 原因 |
 |---------|-----------|------|
 | 行情 OHLCV（每日/全历史） | TDX 日线包 | 最快，~500MB 一次性导入全部历史和最新日线 |
-| 行情 OHLCV（兜底/回补） | Mootdx | TDX 日线包不可用时逐股兜底 |
+| 行情 OHLCV（逐股查询） | EastMoney，失败后使用 BaoStock | 独立日线查询；默认路由不使用 Mootdx 日线 |
 | 除权除息 (XDXR) | Mootdx | 数据更完整 |
 | 批量财务数据 | Mootdx | 一个ZIP=所有股票，远优于逐股查询 |
 | 估值 PE/PB/PS/换手率 | BaoStock | 独有数据 |
 | ST/停牌状态 | BaoStock | 独有数据 |
 | 指数成分股 | BaoStock | 独有数据 |
-| 交易日历 | Mootdx | 提供交易所日历 |
-| 基准指数 | Mootdx | 提供基准指数序列 |
+| 交易日历 | BaoStock | 独立交易所日历 |
+| 基准指数 | TDX 日线包 / BaoStock | 批量导入 / 逐指数查询 |
 
 **单独使用某个数据源**
 
@@ -169,7 +170,7 @@ uv run python scripts/download_efficient.py
 uv run python scripts/download_efficient.py --skip-fundamentals
 uv run python scripts/download_efficient.py --valuation-only  # 仅估值+状态
 
-# Mootdx（速度快，但无估值数据）
+# Mootdx 补充数据（除权除息和批量财务，不下载 OHLCV）
 uv run python scripts/download_mootdx.py
 uv run python scripts/download_mootdx.py --skip-fundamentals
 ```
@@ -317,7 +318,7 @@ SimTradeData/
 from simtradedata.router import SmartRouter
 
 with SmartRouter() as router:
-    # 自动选择最佳源：mootdx → eastmoney → baostock
+    # 日线优先使用 EastMoney，失败后使用 BaoStock
     df = router.get_daily_bars("600000.SS", "2024-01-01", "2024-12-31")
 
     # 单源数据也走 router，接口统一
@@ -402,7 +403,7 @@ BATCH_SIZE = 20
 | 历史起始 | 2015年 | 2015年 | 2015年 | 完整历史 | 完整历史 |
 | API Key | 不需要 | 不需要 | 不需要 | N/A | 不需要 |
 
-> **推荐**：每日/生产 CN 刷新使用 `scripts/download.py --tdx-download --skip-mootdx-ohlcv`。TDX 负责 OHLCV，Mootdx 补充除权除息/财务/日历/基准指数，BaoStock 负责估值/状态。
+> **推荐**：每日/生产 CN 刷新使用 `scripts/download.py`。默认由 TDX 负责 OHLCV，Mootdx 补充除权除息和财务，BaoStock 负责估值、状态、日历和指数查询。旧参数 `--tdx-download --skip-mootdx-ohlcv` 仍兼容；TDX 包失败不会启用 Mootdx 日线兜底。
 
 ### 增量更新机制
 
@@ -445,6 +446,12 @@ DOWNLOAD_ATTEMPTS=3 INTEGRITY_STRICT=1 bash scripts/run_daily.sh
 ## 测试
 
 ```bash
+# 完整本地 CI：Python 3.10 和 3.12，与 GitHub Actions 共用入口
+npm run ci:full
+
+# 仅检查一个 Python 版本
+npm run ci:full -- --python 3.12
+
 # 单元测试（无需网络）
 uv run pytest tests/ -v
 
@@ -453,7 +460,24 @@ uv run pytest tests/router/ -v
 
 # SmartRouter 真实数据源集成测试（需要网络）
 uv run python scripts/test_smart_router_live.py
+
+# 离线 CI 回归测试：禁止网络访问
+uv run --frozen pytest tests/ --disable-socket -m "not external and not performance"
+
+# 在线数据源探测（需要网络，包含新鲜度检查）
+uv run --frozen python -m scripts.check_data_sources
+
+# 独立检查保留的 Mootdx 接口及季度财报解析
+uv run --frozen python -m scripts.check_mootdx_interfaces
 ```
+
+完整 CI 使用 `.venv-ci/` 下的独立环境。测试和覆盖率报告位于
+`reports/ci/python-<版本>/`，阶段汇总位于 `reports/ci/summary.json`，
+构建产物位于 `dist/ci/python-<版本>/`。
+
+GitHub Actions 在 push、pull request 和手动触发时运行离线回归测试及构建。
+独立定时工作流每天两次探测数据源，逐个检查，不使用 fallback 隐藏失败。
+报告、新鲜度规则和限制见[运维说明](docs/OPERATIONS.md#ci-and-data-source-monitoring)。
 
 ## 版本历史
 

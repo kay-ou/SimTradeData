@@ -27,7 +27,7 @@ class TestResolveSources:
     def test_daily_bars_cn(self):
         router = SmartRouter()
         sources = router._resolve_sources("daily_bars", "cn")
-        assert sources == ["mootdx", "eastmoney", "baostock"]
+        assert sources == ["eastmoney", "baostock"]
 
     def test_daily_bars_us(self):
         router = SmartRouter()

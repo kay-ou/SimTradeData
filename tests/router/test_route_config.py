@@ -18,7 +18,21 @@ class TestRouteConfig:
     def test_daily_bars_cn_has_fallback(self):
         sources = DEFAULT_ROUTE_TABLE["daily_bars"]["cn"]
         assert len(sources) >= 2, "daily_bars/cn should have fallback sources"
-        assert sources[0] == "mootdx", "mootdx should be primary for daily_bars/cn"
+        assert sources == ["eastmoney", "baostock"]
+
+    def test_mootdx_keeps_non_daily_interfaces(self):
+        for data_type in [
+            "xdxr",
+            "fundamentals",
+            "stock_list",
+            "realtime_quotes",
+            "minute_bars",
+        ]:
+            assert DEFAULT_ROUTE_TABLE[data_type]["cn"] == ["mootdx"]
+
+    def test_calendar_and_daily_index_do_not_depend_on_mootdx(self):
+        assert DEFAULT_ROUTE_TABLE["trade_calendar"]["cn"] == ["baostock"]
+        assert DEFAULT_ROUTE_TABLE["index_data"]["cn"] == ["baostock"]
 
     def test_daily_bars_us_uses_yfinance(self):
         sources = DEFAULT_ROUTE_TABLE["daily_bars"]["us"]

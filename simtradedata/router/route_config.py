@@ -11,7 +11,7 @@ FETCHER_REGISTRY = {
 # data_type -> market -> [source priority list]
 DEFAULT_ROUTE_TABLE = {
     "daily_bars": {
-        "cn": ["mootdx", "eastmoney", "baostock"],
+        "cn": ["eastmoney", "baostock"],
         "us": ["yfinance"],
     },
     "xdxr": {
@@ -39,10 +39,10 @@ DEFAULT_ROUTE_TABLE = {
         "us": ["yfinance"],
     },
     "trade_calendar": {
-        "cn": ["mootdx", "baostock"],
+        "cn": ["baostock"],
     },
     "index_data": {
-        "cn": ["mootdx", "baostock"],
+        "cn": ["baostock"],
     },
     "realtime_quotes": {
         "cn": ["mootdx"],

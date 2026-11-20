@@ -1,6 +1,11 @@
 import pandas as pd
+import pytest
 
-from simtradedata.validators.data_validator import FundamentalDataValidator
+from simtradedata.validators.data_validator import (
+    DataQualityError,
+    FundamentalDataValidator,
+    MarketDataValidator,
+)
 
 
 def test_fundamental_validator_coerces_string_fields_for_range_checks():
@@ -14,3 +19,44 @@ def test_fundamental_validator_coerces_string_fields_for_range_checks():
     )
 
     assert FundamentalDataValidator.validate(df, "000001.SZ") is True
+
+
+@pytest.mark.parametrize(
+    "field,value,valid",
+    [
+        ("open", 10.0, True),
+        ("open", 0, False),
+        ("high", 8, False),
+        ("close", 13, False),
+        ("volume", -1, False),
+    ],
+)
+def test_market_range_checks_preserve_strict_and_non_strict_behavior(
+    field, value, valid
+):
+    df = pd.DataFrame(
+        {
+            "open": [10.0],
+            "high": [12.0],
+            "low": [9.0],
+            "close": [11.0],
+            "volume": [100],
+            "money": [1100],
+        },
+        index=pd.to_datetime(["2026-06-18"]),
+    )
+    df[field] = value
+
+    assert MarketDataValidator.validate(df, "600000.SS") is valid
+    if valid:
+        assert MarketDataValidator.validate(df, "600000.SS", strict=True) is True
+    else:
+        with pytest.raises(DataQualityError, match="Data range issues"):
+            MarketDataValidator.validate(df, "600000.SS", strict=True)
+
+
+def test_market_missing_price_fails_before_range_checks():
+    df = pd.DataFrame({"volume": [100]}, index=pd.to_datetime(["2026-06-18"]))
+    assert MarketDataValidator.validate(df, "600000.SS") is False
+    with pytest.raises(DataQualityError, match="Missing required fields"):
+        MarketDataValidator.validate(df, "600000.SS", strict=True)

@@ -67,6 +67,110 @@ packages or 60% of the full archive size). Delta archives are never pruned from
 COS, so delta edges remain available for audit or manual recovery; only
 unreferenced baseline archives are removed.
 
+## CI and Data-Source Monitoring
+
+`.github/workflows/ci.yml` checks syntax and undefined names, runs offline pytest
+regressions, and builds distributions on pushes, pull requests, and manual
+dispatch, using Python 3.10 and 3.12.
+`pytest-socket` forbids Python socket access during tests; tests marked `external`
+or `performance` are excluded. JUnit and coverage reports are retained for 14 days.
+The build does not publish a package or release.
+
+Local CI uses the same runner as GitHub Actions:
+
+```bash
+npm run ci:full
+# Optional: check one CI Python version
+npm run ci:full -- --python 3.12
+```
+
+Requires Node.js 20+ (with npm) and uv; no `npm install` is needed.
+By default both Python 3.10 and 3.12 run locked dependency installation,
+static checks, offline tests, and distribution builds. uv can download missing
+Python interpreters and dependencies. Each version uses its own environment
+under `.venv-ci/`, leaving the development `.venv` in place.
+Reports are written to `reports/ci/python-<version>/`, with stage statuses and
+timings in `reports/ci/summary.json`; distributions go to `dist/ci/python-<version>/`.
+Independent checks continue after a failure, then the command exits with code 1
+if any stage failed. Dependency failure skips the remaining stages for that
+Python version. Every invocation runs the selected checks again.
+Live provider probes remain separate from this offline regression pipeline.
+
+`.github/workflows/data-sources.yml` runs independently at 07:17 and 15:17 UTC
+every day and supports manual dispatch. It probes daily bars from
+EastMoney, BaoStock, and yfinance separately through the production adapters,
+with a single-source route so fallback cannot hide a failed provider. Each
+attempt runs in a subprocess with a 90-second hard limit, with at most two
+attempts. Only transient availability failures, timeouts, rate limits, and
+empty responses are retried. It never downloads a full market, repairs the
+database, or publishes data.
+
+The probe checks required OHLCV fields, numeric validity, positive prices,
+nonnegative volume/amount, OHLC relationships, date validity, duplicate dates,
+and the latest date. Yahoo uses a date index and lacks actual traded amount, so
+its probe requires OHLCV and a valid date index instead of a traded-amount field.
+Freshness uses independent `exchange-calendars` XSHG/XNYS
+calendars, including exchange holidays, early closes, and US daylight saving.
+CN sessions become due six hours after close; US sessions become due two hours
+after close. Weekends and holidays continue to expect the last due session.
+An expired or unavailable calendar fails the workflow explicitly while still
+checking provider availability; it never reports unverified freshness as healthy.
+Keep this dependency and its lockfile updated before the calendar coverage ends.
+
+Run all providers locally:
+
+```bash
+uv run --frozen python -m scripts.check_data_sources --json-output reports/data-sources.json
+```
+
+Run a subset or reduce the timeout:
+
+```bash
+uv run --frozen python -m scripts.check_data_sources --sources eastmoney yfinance --timeout 30 --attempts 1
+```
+
+Failures return exit code 1. The JSON report distinguishes `timeout`,
+`rate_limited`, `unavailable`, `empty`, `schema_error`, `invalid_data`, and `stale`,
+with expected/latest dates, attempt count, and elapsed time. GitHub Actions
+includes the report in the run summary and retains it as an artifact for 30 days.
+Use GitHub Actions notification settings to receive failed-workflow notifications.
+There is no automatic email, issue creation, or external messaging integration.
+
+A separate `mootdx-interfaces` job checks the retained Mootdx stock list, XDXR,
+realtime quotes, minute bars, financial catalog, and latest available quarterly
+report. Each interface runs in its own subprocess with a 90-second limit;
+a failed quote endpoint does not prevent the financial tests. The catalog check
+only verifies listing access and schema. The quarterly-content check downloads
+one available quarter into a temporary directory, parses it through the existing
+Affair adapter, and validates `600000` report dates, basic EPS, and total assets.
+It does not certify every financial field or quarterly publication timeliness.
+Minute bars are checked against the independent CN exchange calendar.
+Reports are saved as the `mootdx-interfaces` artifact, separately from daily bars.
+
+```bash
+uv run --frozen python -m scripts.check_mootdx_interfaces
+uv run --frozen python -m scripts.check_mootdx_interfaces --interfaces xdxr fundamentals --timeout 90
+```
+
+CN responsibilities: `scripts/download.py` uses the TDX package by default for
+OHLCV, including the existing benchmark import. A supplied `--tdx-source` uses
+the local package instead. Mootdx downloads default to extras only; calendar and
+index queries use BaoStock. SmartRouter daily stock queries use EastMoney then
+BaoStock. Existing Mootdx methods remain available for explicit diagnostics,
+but daily bars are not a default provider or fallback. `--sources mootdx` on the
+daily probe is therefore diagnostic-only. Quote sessions open lazily and are
+checked with stock metadata at login; each retained endpoint is independently
+validated by the interface job. Affair financial requests need no quote login.
+
+The first version checks one representative daily-bar symbol per provider
+(`600000.SS` for CN and `AAPL.US` for US). Passing does not certify every symbol,
+financial statement, dividend, money-flow endpoint, or intraday endpoint.
+GitHub-hosted runners may be blocked by CN providers: an availability failure
+identifies a problem from that runner, not proof of a global outage. GitHub
+scheduled runs can also be delayed and run only from the default branch; public
+repositories may have schedules disabled after inactivity. These checks become
+active once the workflow files are present on GitHub with Actions enabled.
+
 ## Status Check
 
 From the repository root:

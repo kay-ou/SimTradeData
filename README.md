@@ -124,11 +124,11 @@ A single command downloads all data, using the TDX daily package for the fast OH
 ```bash
 # Daily/production CN refresh (recommended)
 # TDX: OHLCV full history and daily package import
-# Mootdx: corporate actions, bulk financials, trading calendar, benchmark index
-# BaoStock: valuation metrics, ST/suspension status, index constituents
+# Mootdx: corporate actions and bulk financials
+# BaoStock: valuation, status, constituents, calendar, benchmark queries
 uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
-# Fallback full orchestration without the TDX package
+# Default command also uses TDX OHLCV; package failure never re-enables Mootdx daily bars
 uv run python scripts/download.py
 
 # Use an already-downloaded TDX ZIP file
@@ -140,7 +140,7 @@ uv run python scripts/download.py --status
 # Skip financial data (faster)
 uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
 
-# Run Mootdx phase only
+# Run Mootdx extras only (OHLCV disabled)
 uv run python scripts/download.py --source mootdx
 
 # Run BaoStock phase only
@@ -152,14 +152,14 @@ uv run python scripts/download.py --source baostock
 | Data Type | Source | Reason |
 |-----------|--------|--------|
 | OHLCV Market Data (daily/full history) | TDX Daily Package | Fastest, ~500MB bulk import of full history and latest daily data |
-| OHLCV Market Data (fallback/backfill) | Mootdx | Per-symbol fallback when the TDX package is unavailable |
+| OHLCV Market Data (per-symbol queries) | EastMoney, then BaoStock | Independent HTTP/BaoStock daily queries; Mootdx daily bars are disabled in default routing |
 | Corporate Actions (XDXR) | Mootdx | More complete data |
 | Bulk Financial Data | Mootdx | One ZIP = all stocks, far better than per-stock queries |
 | Valuation PE/PB/PS/Turnover | BaoStock | Exclusive data |
 | ST/Suspension Status | BaoStock | Exclusive data |
 | Index Constituents | BaoStock | Exclusive data |
-| Trading Calendar | Mootdx | Provides exchange calendar data |
-| Benchmark Index | Mootdx | Provides benchmark series |
+| Trading Calendar | BaoStock | Independent exchange calendar |
+| Benchmark Index | TDX Package / BaoStock | Bulk benchmark import / per-index queries |
 
 **Using Individual Data Sources**
 
@@ -407,7 +407,7 @@ BATCH_SIZE = 20
 | History Start | 2015 | 2015 | 2015 | Full history | Full history |
 | API Key | Not required | Not required | Not required | N/A | Not required |
 
-> **Recommended**: Use `scripts/download.py --tdx-download --skip-mootdx-ohlcv` for daily/production CN refreshes. TDX handles OHLCV, Mootdx supplements corporate actions/financials/calendar/benchmark, and BaoStock handles valuation/status.
+> **Recommended**: Use `scripts/download.py` for daily/production CN refreshes. TDX handles OHLCV by default, Mootdx supplements corporate actions/financials, and BaoStock handles valuation/status/calendar/index queries. The older `--tdx-download --skip-mootdx-ohlcv` flags remain compatible. A failed TDX package does not trigger Mootdx OHLCV fallback.
 
 ### Incremental Update Mechanism
 
@@ -450,6 +450,12 @@ The integrity gate verifies that active stocks have latest market and valuation 
 ## Testing
 
 ```bash
+# Full local CI: Python 3.10 and 3.12, matching GitHub Actions
+npm run ci:full
+
+# Run the same pipeline for one Python version
+npm run ci:full -- --python 3.12
+
 # Unit tests (no network required)
 uv run pytest tests/ -v
 
@@ -458,7 +464,21 @@ uv run pytest tests/router/ -v
 
 # SmartRouter live integration test (requires network)
 uv run python scripts/test_smart_router_live.py
+
+# CI regression tests: network access is forbidden
+uv run --frozen pytest tests/ --disable-socket -m "not external and not performance"
+
+# Read-only live provider probes (requires network, includes freshness checks)
+uv run --frozen python -m scripts.check_data_sources
+
+# Independently check retained Mootdx interfaces and quarterly report parsing
+uv run --frozen python -m scripts.check_mootdx_interfaces
 ```
+
+GitHub Actions runs offline regression tests and package builds on pushes and
+pull requests. A separate scheduled workflow probes each daily-bar provider
+without fallback twice daily. See [CI and data-source monitoring](docs/OPERATIONS.md#ci-and-data-source-monitoring)
+for reports, freshness rules, and limitations.
 
 ## Version History
 

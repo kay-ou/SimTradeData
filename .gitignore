@@ -130,6 +130,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.venv-ci/
 env/
 venv/
 ENV/
@@ -203,6 +204,8 @@ __marimo__/
 .pytest_cache/
 data/
 *.json
+!package.json
+reports/
 CLAUDE*.md
 GEMINI.md
 AGENTS.md

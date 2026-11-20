@@ -161,7 +161,7 @@ class SmartRouter:
             detail = "; ".join(f"{s}: {e}" for s, e in errors)
             raise DataSourceError(
                 f"All sources failed for {data_type}: {detail}"
-            )
+            ) from errors[-1][1]
         if skipped_unhealthy and not errors:
             raise DataSourceError(
                 f"All sources skipped for {data_type}: "

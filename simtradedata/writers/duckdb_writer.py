@@ -842,6 +842,23 @@ class DuckDBWriter:
     # Core write methods (with upsert)
     # ========================================
 
+    def _upsert_symbol_rows(self, table: str, df: pd.DataFrame) -> None:
+        """Update only supplied columns, preserving fields owned by other sources."""
+        self._check_table(table)
+        cols_str = ", ".join(df.columns)
+        update_cols = [c for c in df.columns if c not in ("symbol", "date")]
+        if update_cols:
+            set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+            conflict_clause = f"ON CONFLICT (symbol, date) DO UPDATE SET {set_clause}"
+        else:
+            conflict_clause = "ON CONFLICT (symbol, date) DO NOTHING"
+        self.conn.execute(f"""
+            INSERT INTO {table} ({cols_str})
+            SELECT {cols_str} FROM df
+            {conflict_clause}
+        """)
+        self._record_symbol_changes(table, df)
+
     def write_market_data(
         self, symbol: str, df: pd.DataFrame, insert_only: bool = False
     ) -> int:
@@ -941,22 +958,10 @@ class DuckDBWriter:
         available = [c for c in columns if c in df.columns]
         df = df[available]
 
-        cols_str = ", ".join(available)
         # Only overwrite the columns this source provides; daily columns
         # (roe, roa, naps, total_shares, float_value) must survive rows
         # written by sources that do not carry them.
-        update_cols = [c for c in available if c not in ("symbol", "date")]
-        if update_cols:
-            set_str = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
-            conflict_clause = f"ON CONFLICT (symbol, date) DO UPDATE SET {set_str}"
-        else:
-            conflict_clause = "ON CONFLICT (symbol, date) DO NOTHING"
-        self.conn.execute(f"""
-            INSERT INTO valuation ({cols_str})
-            SELECT {cols_str} FROM df
-            {conflict_clause}
-        """)
-        self._record_symbol_changes("valuation", df)
+        self._upsert_symbol_rows("valuation", df)
 
         logger.debug(f"Wrote {len(df)} valuation rows for {symbol}")
         return len(df)
@@ -990,21 +995,7 @@ class DuckDBWriter:
         available = [c for c in columns if c in df.columns]
         df = df[available]
 
-        cols_str = ", ".join(available)
-        # Use ON CONFLICT to only update columns present in the DataFrame,
-        # preserving existing values for columns not in this write batch.
-        update_cols = [c for c in available if c not in ("symbol", "date")]
-        if update_cols:
-            set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-            conflict_clause = f"ON CONFLICT (symbol, date) DO UPDATE SET {set_clause}"
-        else:
-            conflict_clause = "ON CONFLICT (symbol, date) DO NOTHING"
-        self.conn.execute(f"""
-            INSERT INTO fundamentals ({cols_str})
-            SELECT {cols_str} FROM df
-            {conflict_clause}
-        """)
-        self._record_symbol_changes("fundamentals", df)
+        self._upsert_symbol_rows("fundamentals", df)
 
         logger.debug(f"Wrote {len(df)} fundamental rows for {symbol}")
         return len(df)
@@ -1045,20 +1036,11 @@ class DuckDBWriter:
             "bonus_ps",
             "dividend",
         ]
-        available = [c for c in columns if c in df.columns]
-        df = df[available]
+        df = df[columns]
 
-        cols_str = ", ".join(available)
         # 官方复权列由权威数据源维护：同日期只更新事件局部列，绝不能整行替换，
         # 否则会把 exer_forward/backward 官方列冲成 NULL。
-        update_cols = [c for c in available if c not in ("symbol", "date")]
-        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-        self.conn.execute(f"""
-            INSERT INTO exrights ({cols_str})
-            SELECT {cols_str} FROM df
-            ON CONFLICT (symbol, date) DO UPDATE SET {set_clause}
-        """)
-        self._record_symbol_changes("exrights", df)
+        self._upsert_symbol_rows("exrights", df)
 
         logger.debug(f"Wrote {len(df)} exrights rows for {symbol}")
         return len(df)
@@ -2273,61 +2255,6 @@ class DuckDBWriter:
         ])
         version_data.to_parquet(output_dir / "version.parquet", index=False)
 
-    def _export_per_symbol_table(
-        self, table: str, output_dir: Path, market: str = "cn"
-    ) -> None:
-        """Export table to per-symbol Parquet files using DuckDB COPY"""
-        symbols = self.get_existing_stocks(table)
-
-        if not symbols:
-            logger.info(f"No data in {table} to export")
-            return
-
-        for symbol in symbols:
-            output_file = output_dir / f"{symbol}.parquet"
-            # Escape single quotes in symbol for SQL safety
-            symbol_escaped = symbol.replace("'", "''")
-
-            if table == "stocks":
-                # Calculate high_limit and low_limit during export
-                self._export_stocks_with_limits(
-                    symbol_escaped, output_file, market=market
-                )
-            elif table == "fundamentals":
-                # Calculate TTM indicators during export
-                self._export_fundamentals_with_ttm(symbol_escaped, output_file)
-            elif table == "valuation":
-                # Enrich with total_shares/a_floats from fundamentals
-                self._export_valuation_enriched(symbol_escaped, output_file)
-            elif table == "exrights":
-                self._export_exrights_with_factors(symbol_escaped, output_file)
-            else:
-                self.conn.execute(f"""
-                    COPY (
-                        SELECT * EXCLUDE (symbol) REPLACE (date::TIMESTAMP_NS AS date) FROM {table}
-                        WHERE symbol = '{symbol_escaped}'
-                        ORDER BY date
-                    ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-                """)
-
-        logger.info(f"Exported {len(symbols)} {table} files")
-
-    def _export_exrights_with_factors(self, symbol_escaped: str, output_file: Path) -> None:
-        """Export exrights with exer_forward_a/b factors (官方优先, 缺则自算)"""
-        df = self.conn.execute(f"""
-            SELECT * EXCLUDE (symbol) REPLACE (date::TIMESTAMP_NS AS date)
-            FROM exrights WHERE symbol = '{symbol_escaped}' ORDER BY date
-        """).fetchdf()
-
-        if df.empty:
-            df.to_parquet(str(output_file), index=False)
-            return
-
-        _fill_exer_factors(df)
-        _fill_dividend_from_bonus_ps(df)
-
-        df.to_parquet(str(output_file), index=False, compression="zstd")
-
     def _export_exrights_batch(self, output_dir: Path, market: str = "cn") -> None:
         """Export all exrights with pre-computed forward adj factors (batch)."""
         import time
@@ -2642,229 +2569,6 @@ class DuckDBWriter:
 
         self.conn.execute("DROP TABLE IF EXISTS _trade_cal")
         logger.info(f"Exported {len(symbols)} stocks files in {time.time() - t0:.1f}s")
-
-    def _export_stocks_with_limits(
-        self, symbol_escaped: str, output_file: Path, market: str = "cn"
-    ) -> None:
-        """
-        Export stocks data with calculated price limits
-
-        Price limit rules:
-        - US stocks: no price limits (NULL)
-        - Normal stocks: ±10%
-        - ST stocks: ±5%
-        - ChiNext (300xxx, 301xxx) / STAR (688xxx, 689xxx): ±20% after 2020-08-24
-        """
-        # CTE fills suspension days (volume=0, OHLC = last close)
-        # and missing preclose with previous day's close.
-        # trade_cal: all trading days derived from stocks table
-        # raw: actual data rows for this symbol
-        # joined: left join ensures every trading day within stock's lifespan has a row
-        # gap_filled: forward-fill close into suspension gaps
-        # filled: compute preclose from gap_filled close
-        base_cte = f"""
-            WITH raw AS (
-                SELECT date, open, close, high, low, preclose, volume, money
-                FROM stocks WHERE symbol = '{symbol_escaped}'
-            ),
-            lifespan AS (
-                SELECT MIN(date) AS first_date, MAX(date) AS last_date FROM raw
-            ),
-            joined AS (
-                SELECT
-                    tc.date,
-                    -- NULL out OHLC when volume=0 (suspended).
-                    -- Prevents ex-rights adjusted prices from replacing
-                    -- the last traded price during suspension.
-                    CASE WHEN r.volume > 0 THEN r.open END AS open,
-                    CASE WHEN r.volume > 0 THEN r.close END AS close,
-                    CASE WHEN r.volume > 0 THEN r.high END AS high,
-                    CASE WHEN r.volume > 0 THEN r.low END AS low,
-                    CASE WHEN r.volume > 0 THEN r.preclose END AS preclose,
-                    COALESCE(r.volume, 0) AS volume,
-                    COALESCE(r.money, 0.0) AS money
-                FROM _trade_cal tc
-                CROSS JOIN lifespan ls
-                LEFT JOIN raw r ON tc.date = r.date
-                WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
-            ),
-            gap_filled AS (
-                SELECT
-                    date,
-                    COALESCE(open, last_value(close IGNORE NULLS) OVER w) AS open,
-                    COALESCE(close, last_value(close IGNORE NULLS) OVER w) AS close,
-                    COALESCE(high, last_value(close IGNORE NULLS) OVER w) AS high,
-                    COALESCE(low, last_value(close IGNORE NULLS) OVER w) AS low,
-                    preclose,
-                    volume,
-                    money
-                FROM joined
-                WINDOW w AS (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-            ),
-            with_lag AS (
-                SELECT
-                    date, open, close, high, low,
-                    LAG(close) OVER (ORDER BY date) AS lag_close,
-                    last_value(CASE WHEN volume > 0 THEN date END IGNORE NULLS) OVER (
-                        ORDER BY date
-                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-                    ) AS last_active_date,
-                    preclose AS stored_preclose,
-                    volume, money
-                FROM gap_filled
-            ),
-            adj AS (
-                SELECT
-                    wl.date,
-                    SUM(COALESCE(ex.bonus_ps, 0)
-                        - COALESCE(ex.rationed_px, 0) * COALESCE(ex.rationed_ps, 0)
-                    ) AS total_deduction,
-                    EXP(SUM(LN(
-                        1 + COALESCE(ex.allotted_ps, 0) + COALESCE(ex.rationed_ps, 0)
-                    ))) AS total_divisor,
-                    COUNT(ex.date) AS event_count
-                FROM with_lag wl
-                INNER JOIN exrights ex ON ex.symbol = '{symbol_escaped}'
-                    AND ex.date > wl.last_active_date AND ex.date <= wl.date
-                GROUP BY wl.date
-            ),
-            filled AS (
-                SELECT
-                    wl.date::TIMESTAMP_NS AS date, wl.open, wl.close, wl.high, wl.low,
-                    CASE
-                        WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
-                             AND wl.volume > 0 THEN
-                            ROUND(
-                                (wl.lag_close - adj.total_deduction)
-                                / adj.total_divisor,
-                                2)
-                        ELSE COALESCE(wl.lag_close, wl.stored_preclose)
-                    END AS preclose,
-                    wl.volume, wl.money
-                FROM with_lag wl
-                LEFT JOIN adj ON adj.date = wl.date
-            )
-        """
-
-        if market == "us":
-            self.conn.execute(f"""
-                COPY (
-                    {base_cte}
-                    SELECT date, open, close, high, low,
-                        NULL AS high_limit, NULL AS low_limit,
-                        preclose, volume, money
-                    FROM filled ORDER BY date
-                ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-            """)
-            return
-        # Extract numeric code prefix to determine board type
-        code_prefix = symbol_escaped[:3]
-
-        # Check if ChiNext or STAR market
-        is_chinext_star = code_prefix in ("300", "301", "688", "689")
-
-        if is_chinext_star:
-            # ChiNext/STAR: 20% after 2020-08-24, 10% before
-            self.conn.execute(f"""
-                COPY (
-                    {base_cte}
-                    SELECT date, open, close, high, low,
-                        CASE
-                            WHEN date >= '2020-08-24' THEN ROUND(preclose * 1.20, 2)
-                            ELSE ROUND(preclose * 1.10, 2)
-                        END AS high_limit,
-                        CASE
-                            WHEN date >= '2020-08-24' THEN ROUND(preclose * 0.80, 2)
-                            ELSE ROUND(preclose * 0.90, 2)
-                        END AS low_limit,
-                        preclose, volume, money
-                    FROM filled ORDER BY date
-                ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-            """)
-        else:
-            # Normal stocks: 10% limit (ST handling needs isST from status)
-            # For now, use 10% as default; ST detection could be added later
-            self.conn.execute(f"""
-                COPY (
-                    {base_cte}
-                    SELECT date, open, close, high, low,
-                        ROUND(preclose * 1.10, 2) AS high_limit,
-                        ROUND(preclose * 0.90, 2) AS low_limit,
-                        preclose, volume, money
-                    FROM filled ORDER BY date
-                ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-            """)
-
-    def _export_fundamentals_with_ttm(
-        self, symbol_escaped: str, output_file: Path
-    ) -> None:
-        """
-        Export fundamentals data with TTM indicators.
-
-        TTM fields (roe_ttm, roa_ttm, net_profit_ratio_ttm, gross_income_ratio_ttm)
-        are pre-computed in DB by compute_derived_fundamentals() or download.
-        Only net_profit_ratio_ttm and gross_income_ratio_ttm are calculated here
-        since they are not stored in the DB.
-        """
-        self.conn.execute(f"""
-            COPY (
-                SELECT
-                    date::TIMESTAMP_NS AS date, publ_date,
-                    operating_revenue_grow_rate, net_profit_grow_rate,
-                    basic_eps_yoy, np_parent_company_yoy,
-                    net_profit_ratio,
-                    AVG(net_profit_ratio) OVER (
-                        ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-                    ) AS net_profit_ratio_ttm,
-                    gross_income_ratio,
-                    AVG(gross_income_ratio) OVER (
-                        ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-                    ) AS gross_income_ratio_ttm,
-                    roa, roa_ttm,
-                    roe, roe_ttm,
-                    total_asset_grow_rate, total_asset_turnover_rate,
-                    current_assets_turnover_rate, inventory_turnover_rate,
-                    accounts_receivables_turnover_rate,
-                    current_ratio, quick_ratio, debt_equity_ratio,
-                    interest_cover, roic, roa_ebit_ttm,
-                    total_shares, a_floats,
-                    {_FUNDAMENTAL_EXPORT_EXTRA_SQL}
-                FROM fundamentals
-                WHERE symbol = '{symbol_escaped}'
-                ORDER BY date
-            ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-        """)
-
-    def _export_valuation_enriched(
-        self, symbol_escaped: str, output_file: Path
-    ) -> None:
-        """
-        Export valuation data with enriched fields:
-        - total_shares, a_floats: forward filled from fundamentals
-        - total_value, float_value: market cap computed as shares * close
-        - roe, roa, roe_ttm, roa_ttm: forward filled from fundamentals
-        - naps: calculated as close / pb (derived from pbMRQ definition)
-
-        Uses LAST_VALUE with IGNORE NULLS for forward fill.
-        """
-        self.conn.execute(f"""
-            COPY (
-                SELECT
-                    v.date::TIMESTAMP_NS AS date,
-                    {_valuation_enrich_select()}
-                FROM valuation v
-                ASOF JOIN stocks s
-                    ON v.symbol = s.symbol AND v.date >= s.date
-                LEFT JOIN LATERAL (
-                    SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
-                    FROM fundamentals f2
-                    WHERE f2.symbol = v.symbol AND f2.date <= v.date
-                    ORDER BY f2.date DESC LIMIT 1
-                ) f ON TRUE
-                WHERE v.symbol = '{symbol_escaped}'
-                ORDER BY v.date
-            ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
-        """)
 
     def _ensure_stock_metadata_from_pool(self) -> None:
         """Populate stock_metadata with accurate listed/de_listed dates.

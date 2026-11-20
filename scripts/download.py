@@ -3,8 +3,8 @@
 Unified data download entry point for SimTradeData
 
 This script orchestrates downloads from multiple data sources:
-- Phase 0 (optional): TDX bulk import - fast OHLCV from local TDX .day files
-- Phase 1: Mootdx - OHLCV (incremental), adjust factors, XDXR, batch financials, calendar, benchmark
+- Phase 0 (default): TDX bulk import - fast OHLCV from local TDX .day files
+- Phase 1: Mootdx - XDXR and batch financials; BaoStock calendar and benchmark
 - Phase 2: BaoStock - Valuation (PE/PB/PS/PCF/turnover), ST/HALT status, index constituents
 
 Each source only downloads data it's best suited for, avoiding redundancy.
@@ -179,7 +179,7 @@ def run_mootdx_download(
     skip_fundamentals: bool = False,
     download_dir: str | None = None,
     refresh_fundamentals: bool = False,
-    skip_ohlcv: bool = False,
+    skip_ohlcv: bool = True,
     skip_bonus_fix: bool = False,
 ) -> bool:
     """Run Mootdx download phase."""
@@ -248,9 +248,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  uv run python scripts/download.py                # Full download
+  uv run python scripts/download.py                # TDX OHLCV + extras
   uv run python scripts/download.py --status       # Show data status only
-  uv run python scripts/download.py --source mootdx    # Mootdx only
+  uv run python scripts/download.py --source mootdx    # Mootdx extras only
   uv run python scripts/download.py --source baostock  # BaoStock only
   uv run python scripts/download.py --skip-fundamentals
   uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --source mootdx
@@ -294,7 +294,7 @@ Examples:
     parser.add_argument(
         "--skip-mootdx-ohlcv",
         action="store_true",
-        help="Skip mootdx per-symbol OHLCV download",
+        help="Compatibility flag; Mootdx OHLCV is always skipped by this entry point",
     )
     parser.add_argument(
         "--skip-bonus-fix",
@@ -327,36 +327,33 @@ Examples:
     print("SimTradeData Unified Download")
     print("=" * 70)
     print("\nData source responsibilities:")
-    if args.tdx_source or args.tdx_download:
+    tdx_enabled = bool(args.tdx_source or args.tdx_download or args.source == "all")
+    if tdx_enabled:
         print("  TDX:      OHLCV bulk import (fast, from .day files)")
-    print("  Mootdx:   OHLCV (incremental), adjust factors, XDXR, batch financials, calendar, benchmark")
+    print("  Mootdx:   XDXR and batch financials (OHLCV disabled)")
     print("  BaoStock: Valuation (PE/PB/PS/PCF/turnover), ST/HALT status, index constituents")
     print("=" * 70)
 
     success = True
     degraded: list[str] = []
-    tdx_enabled = bool(args.tdx_source or args.tdx_download)
 
     # Phase 0: TDX import (optional, but the primary OHLCV source when enabled)
     tdx_failed = False
     if args.tdx_source:
         if not run_tdx_import(args.tdx_source):
             tdx_failed = True
-    elif args.tdx_download:
+    elif tdx_enabled:
         if not run_tdx_download_and_import():
             tdx_failed = True
 
     # Phase 1: Mootdx
     mootdx_failed = False
     if args.source in ["mootdx", "all"]:
-        skip_mootdx_ohlcv = (
-            args.skip_mootdx_ohlcv or args.tdx_source is not None or args.tdx_download
-        )
         if not run_mootdx_download(
             skip_fundamentals=args.skip_fundamentals,
             download_dir=args.download_dir,
             refresh_fundamentals=args.refresh_fundamentals,
-            skip_ohlcv=skip_mootdx_ohlcv,
+            skip_ohlcv=True,
             skip_bonus_fix=args.skip_bonus_fix,
         ):
             mootdx_failed = True

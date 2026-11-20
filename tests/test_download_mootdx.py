@@ -1,7 +1,30 @@
+from contextlib import nullcontext
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 import scripts.download_mootdx as download_mootdx
 from scripts.download_mootdx import MootdxDownloader, _latest_stock_coverage
+from simtradedata.writers.duckdb_writer import DuckDBWriter
+
+
+@pytest.fixture(autouse=True)
+def global_data_sources(monkeypatch):
+    class Router:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get_trade_calendar(self, *_args):
+            return pd.DataFrame({"calendar_date": ["2026-06-25"], "is_trading_day": ["1"]})
+
+        def get_index_data(self, *_args):
+            return pd.DataFrame({"close": [1.0]})
+
+    monkeypatch.setattr(download_mootdx, "SmartRouter", Router)
 
 
 class FakeWriter:
@@ -78,6 +101,94 @@ def test_download_stock_data_can_skip_ohlcv_and_fetch_xdxr():
     assert downloaded is True
     assert downloader.unified_fetcher.xdxr_called is True
     assert downloader.writer.exrights_written is not None
+
+
+def test_default_download_repairs_missing_and_sparse_exrights_without_ohlcv(
+    monkeypatch, tmp_path
+):
+    symbols = [f"00000{i}.SZ" for i in range(1, 6)]
+    fetched = []
+    batches = []
+    db_path = tmp_path / "cn.duckdb"
+
+    class Fetcher:
+        def login(self):
+            pass
+
+        def logout(self):
+            pass
+
+        def fetch_stock_list(self):
+            return symbols
+
+        def fetch_daily_data(self, *args):
+            pytest.fail("OHLCV must remain skipped")
+
+        def fetch_xdxr(self, symbol):
+            fetched.append(symbol)
+            return pd.DataFrame({
+                "category": [1, 1, 1],
+                "year": [2026, 2026, 2026],
+                "month": [1, 1, 1],
+                "day": [1, 2, 3],
+                "songzhuangu": [0.0, 0.0, 0.0],
+                "peigu": [0.0, 0.0, 0.0],
+                "peigujia": [0.0, 0.0, 0.0],
+                "fenhong": [1.0, 1.0, 1.0],
+            })
+
+    class Downloader(MootdxDownloader):
+        def __init__(self, db_path, **kwargs):
+            existing = Path(db_path).exists()
+            self.writer = DuckDBWriter(db_path)
+            self.unified_fetcher = Fetcher()
+            self.failed_stocks = []
+            # The global-data fixture has no benchmark date; this test covers XDXR.
+            self.writer.write_benchmark = lambda df: None
+            if not existing:
+                for count, symbol in enumerate(symbols):
+                    self.writer.conn.executemany(
+                        "INSERT INTO stocks (symbol, date) VALUES (?, ?)",
+                        [(symbol, "2026-01-05"), (symbol, "2026-01-06")],
+                    )
+                    if count:
+                        self.writer.write_exrights(symbol, pd.DataFrame({
+                            "date": pd.date_range("2026-01-01", periods=count),
+                            "bonus_ps": [0.1] * count,
+                        }))
+                self.writer.write_exrights("999999.SZ", pd.DataFrame({
+                    "date": ["2026-01-01"], "bonus_ps": [0.1],
+                }))
+
+        def download_batch(self, batch, start, end, pbar, include_ohlcv=True):
+            batches.append((list(batch), include_ohlcv))
+            successes = 0
+            for symbol in batch:
+                successes += self.download_stock_data(
+                    symbol, start, end, include_ohlcv=include_ohlcv
+                )
+                pbar.update(1)
+            return successes
+
+    monkeypatch.setattr(download_mootdx, "ProcessLock", lambda path: nullcontext())
+    monkeypatch.setattr(download_mootdx, "MootdxDownloader", Downloader)
+    monkeypatch.setattr(download_mootdx, "DEFAULT_DB_PATH", str(db_path))
+
+    download_mootdx.download_all_data(skip_fundamentals=True, skip_bonus_fix=True)
+    assert fetched == symbols[:3]
+    assert batches == [(symbols[:3], False)]
+
+    download_mootdx.download_all_data(skip_fundamentals=True, skip_bonus_fix=True)
+    assert fetched == symbols[:3]
+    assert batches == [(symbols[:3], False)]
+    with DuckDBWriter(str(db_path)) as stored:
+        assert stored.conn.execute(
+            "SELECT symbol, COUNT(*) FROM exrights GROUP BY symbol ORDER BY symbol"
+        ).fetchall() == [
+            (symbols[0], 3), (symbols[1], 3), (symbols[2], 3),
+            (symbols[3], 3), (symbols[4], 4), ("999999.SZ", 1),
+        ]
+        assert stored.conn.execute("SELECT COUNT(*) FROM stocks").fetchone()[0] == 10
 
 
 def test_latest_stock_coverage_counts_only_current_stock_pool_symbols():

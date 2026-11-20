@@ -123,20 +123,14 @@ class BaseFetcher(ABC):
         start = time.monotonic()
         try:
             result = func(*args, **kwargs)
-            elapsed = time.monotonic() - start
-            self._monitor.record_request(source, success=True,
-                                         response_time=elapsed)
-            self._circuit_breaker.record_success()
-            self._cooldown.record_success(source)
+            self._record_source_result(
+                success=True, elapsed=time.monotonic() - start,
+            )
             return result
         except Exception as e:
-            elapsed = time.monotonic() - start
-            error_type = self._classify_error(e)
-            self._monitor.record_request(source, success=False,
-                                         response_time=elapsed,
-                                         error=str(e))
-            self._circuit_breaker.record_failure()
-            self._cooldown.record_failure(source, error_type)
+            self._record_source_result(
+                success=False, elapsed=time.monotonic() - start, error=e,
+            )
             raise
 
     def _ensure_source_available(self) -> bool:
@@ -187,10 +181,10 @@ class BaseFetcher(ABC):
             self._circuit_breaker.record_success()
             self._cooldown.record_success(self.source_name)
         else:
-            error_type = self._classify_error(error) if error else "default"
+            error_type = self._classify_error(error) if error is not None else "default"
             self._monitor.record_request(
                 self.source_name, success=False, response_time=elapsed,
-                error=str(error) if error else "",
+                error=str(error) if error is not None else "",
             )
             self._circuit_breaker.record_failure()
             self._cooldown.record_failure(self.source_name, error_type)

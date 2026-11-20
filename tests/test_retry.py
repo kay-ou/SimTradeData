@@ -19,6 +19,19 @@ class TestErrorClassification:
     def test_connection_error_is_retryable(self):
         assert is_retryable(ConnectionError("connection failed")) is True
 
+    @pytest.mark.parametrize(
+        "error_type",
+        [ConnectionResetError, ConnectionAbortedError, ConnectionRefusedError],
+    )
+    def test_connection_subclasses_are_retryable_without_message(self, error_type):
+        assert is_retryable(error_type()) is True
+
+    def test_non_retryable_type_takes_precedence_over_connection_error(self):
+        class InvalidConnection(ValueError, ConnectionError):
+            pass
+
+        assert is_retryable(InvalidConnection("connection refused")) is False
+
     def test_value_error_not_retryable(self):
         assert is_retryable(ValueError("invalid value")) is False
 

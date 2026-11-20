@@ -7,6 +7,8 @@ This module provides utilities to calculate TTM indicators from quarterly data.
 import logging
 import pandas as pd
 
+from simtradedata.utils.sampling import quarter_end_date
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,21 +45,11 @@ def calculate_ttm_indicators(
         result = result.sort_index()
     
     # Calculate TTM for ratio fields (use rolling mean)
-    if 'roe' in result.columns:
-        result['roe_ttm'] = result['roe'].rolling(window=periods, min_periods=periods).mean()
-    
-    if 'roa' in result.columns:
-        result['roa_ttm'] = result['roa'].rolling(window=periods, min_periods=periods).mean()
-    
-    if 'net_profit_ratio' in result.columns:
-        result['net_profit_ratio_ttm'] = result['net_profit_ratio'].rolling(
-            window=periods, min_periods=periods
-        ).mean()
-    
-    if 'gross_income_ratio' in result.columns:
-        result['gross_income_ratio_ttm'] = result['gross_income_ratio'].rolling(
-            window=periods, min_periods=periods
-        ).mean()
+    for field in ('roe', 'roa', 'net_profit_ratio', 'gross_income_ratio'):
+        if field in result.columns:
+            result[f'{field}_ttm'] = result[field].rolling(
+                window=periods, min_periods=periods
+            ).mean()
     
     # Note: roa_ebit_ttm and roic require additional data not available from these APIs
     # These will be left as NaN for now
@@ -88,14 +80,7 @@ def get_quarters_in_range(start_date: str, end_date: str) -> list:
     
     while True:
         # Quarter end date
-        if quarter == 1:
-            q_end = pd.Timestamp(year, 3, 31)
-        elif quarter == 2:
-            q_end = pd.Timestamp(year, 6, 30)
-        elif quarter == 3:
-            q_end = pd.Timestamp(year, 9, 30)
-        else:  # quarter == 4
-            q_end = pd.Timestamp(year, 12, 31)
+        q_end = pd.Timestamp(quarter_end_date(year, quarter))
         
         if q_end > end:
             break

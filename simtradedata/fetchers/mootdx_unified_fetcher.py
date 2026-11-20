@@ -39,8 +39,7 @@ class MootdxUnifiedFetcher:
         self._affair_fetcher = MootdxAffairFetcher(download_dir=download_dir)
 
     def login(self):
-        """Login to mootdx quotes server"""
-        self._quotes_fetcher.login()
+        """Quote methods open their session lazily; Affair needs no quote login."""
 
     def logout(self):
         """Logout from mootdx quotes server"""
@@ -81,21 +80,9 @@ class MootdxUnifiedFetcher:
         if df.empty:
             return pd.DataFrame()
 
-        # Standardize columns to match BaoStock unified format
-        column_map = {
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "volume": "volume",
-            "amount": "amount",
-        }
-
-        available = {k: v for k, v in column_map.items() if k in df.columns}
-        result = df[["date"] + list(available.keys())].copy()
-        result = result.rename(columns=available)
-
-        return result
+        fields = ["open", "high", "low", "close", "volume", "amount"]
+        available = [field for field in fields if field in df.columns]
+        return df[["date"] + available].copy()
 
     def fetch_index_data(
         self,
@@ -161,12 +148,12 @@ class MootdxUnifiedFetcher:
             first_two = code[:2]
             first_three = code[:3]
 
-            if first_three in sz_stock_prefixes or first_three in sh_stock_prefixes:
-                ptrade_code = convert_to_ptrade_code(code, "qstock")
-                codes.append(ptrade_code)
-            elif first_two in etf_prefixes:
-                ptrade_code = convert_to_ptrade_code(code, "qstock")
-                codes.append(ptrade_code)
+            if (
+                first_three in sz_stock_prefixes
+                or first_three in sh_stock_prefixes
+                or first_two in etf_prefixes
+            ):
+                codes.append(convert_to_ptrade_code(code, "qstock"))
 
         return sorted(codes)
 

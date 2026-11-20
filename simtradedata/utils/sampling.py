@@ -23,12 +23,12 @@ def generate_monthly_start_dates(start_date: str, end_date: str = None) -> list:
         List of datetime objects at month starts, plus end_date if not included
     """
     end = end_date or datetime.now().strftime("%Y-%m-%d")
-    end_dt = pd.to_datetime(end)
+    end_dt = pd.to_datetime(end).to_pydatetime()
 
     dates = pd.date_range(start=start_date, end=end, freq="MS").to_pydatetime().tolist()
 
-    if end_dt not in [pd.to_datetime(d) for d in dates]:
-        dates.append(end_dt.to_pydatetime())
+    if end_dt not in dates:
+        dates.append(end_dt)
 
     return dates
 

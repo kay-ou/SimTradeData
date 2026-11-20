@@ -83,24 +83,24 @@ class MarketDataValidator:
 
         # OHLC prices should be positive
         for field in ["open", "high", "low", "close"]:
-            if field in df.columns and (df[field] <= 0).any():
-                invalid_count = (df[field] <= 0).sum()
+            invalid_count = (df[field] <= 0).sum()
+            if invalid_count:
                 issues.append(f"{invalid_count} non-positive {field} prices")
 
         # High >= Low
-        if (df["high"] < df["low"]).any():
-            invalid_count = (df["high"] < df["low"]).sum()
+        invalid_count = (df["high"] < df["low"]).sum()
+        if invalid_count:
             issues.append(f"{invalid_count} rows where high < low")
 
         # Close should be between high and low
         out_of_range = (df["close"] > df["high"]) | (df["close"] < df["low"])
-        if out_of_range.any():
-            invalid_count = out_of_range.sum()
+        invalid_count = out_of_range.sum()
+        if invalid_count:
             issues.append(f"{invalid_count} rows where close not in [low, high]")
 
         # Volume should be non-negative
-        if (df["volume"] < 0).any():
-            invalid_count = (df["volume"] < 0).sum()
+        invalid_count = (df["volume"] < 0).sum()
+        if invalid_count:
             issues.append(f"{invalid_count} negative volume values")
 
         if issues:

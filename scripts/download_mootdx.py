@@ -31,6 +31,7 @@ from simtradedata.config.field_mappings import (  # noqa: E402
     CN_HISTORY_START,
 )
 from simtradedata.fetchers.mootdx_unified_fetcher import MootdxUnifiedFetcher  # noqa: E402
+from simtradedata.router import SmartRouter  # noqa: E402
 from simtradedata.utils.process_lock import ProcessLock  # noqa: E402
 from simtradedata.writers.duckdb_writer import DEFAULT_DB_PATH, DuckDBWriter  # noqa: E402
 
@@ -640,7 +641,7 @@ def download_all_data(
     start_date: str = None,
     download_dir: str = None,
     refresh_fundamentals: bool = False,
-    skip_ohlcv: bool = False,
+    skip_ohlcv: bool = True,
     skip_bonus_fix: bool = False,
 ):
     """
@@ -698,11 +699,14 @@ def download_all_data(
             skip_stock_download = skip_ohlcv
             extras_stock_pool = None
             if skip_ohlcv:
+                # Match download_stock_data's missing/sparse XDXR repair rule.
                 missing = downloader.writer.conn.execute("""
                     SELECT DISTINCT s.symbol FROM stocks s
-                    LEFT JOIN (SELECT DISTINCT symbol FROM exrights) x
-                        ON s.symbol = x.symbol
-                    WHERE x.symbol IS NULL
+                    LEFT JOIN (
+                        SELECT symbol, COUNT(*) AS event_count
+                        FROM exrights GROUP BY symbol
+                    ) x ON s.symbol = x.symbol
+                    WHERE COALESCE(x.event_count, 0) < 3
                     ORDER BY s.symbol
                 """).fetchall()
                 extras_stock_pool = [row[0] for row in missing]
@@ -903,9 +907,8 @@ def download_all_data(
             # Trading calendar
             print("  Trading calendar...")
             try:
-                trade_cal = downloader.unified_fetcher.fetch_trade_calendar(
-                    start_date_str, end_date_str
-                )
+                with SmartRouter() as router:
+                    trade_cal = router.get_trade_calendar(start_date_str, end_date_str)
                 if not trade_cal.empty:
                     trade_days = trade_cal[trade_cal["is_trading_day"] == "1"]
                     trade_days = trade_days.rename(
@@ -920,9 +923,8 @@ def download_all_data(
             benchmark = BENCHMARK_CONFIG["default_index"]
             print(f"  Benchmark index ({benchmark})...")
             try:
-                benchmark_df = downloader.unified_fetcher.fetch_index_data(
-                    benchmark, start_date_str, end_date_str
-                )
+                with SmartRouter() as router:
+                    benchmark_df = router.get_index_data(benchmark, start_date_str, end_date_str)
                 if not benchmark_df.empty:
                     downloader.writer.write_benchmark(benchmark_df)
                     print(f"    {len(benchmark_df)} days")
@@ -984,7 +986,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-ohlcv",
         action="store_true",
-        help="Skip mootdx per-symbol OHLCV download",
+        default=True,
+        help="Compatibility flag; Mootdx OHLCV is disabled by default",
     )
     parser.add_argument(
         "--skip-bonus-fix",

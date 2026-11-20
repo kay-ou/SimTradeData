@@ -5,6 +5,7 @@ per project convention (CLAUDE.md: no mocks except external systems).
 """
 import pandas as pd
 import pytest
+from types import SimpleNamespace
 
 from simtradedata.router.exceptions import DataSourceError, NoSourceAvailable
 from simtradedata.router.smart_router import SmartRouter
@@ -62,6 +63,27 @@ class StubFetcherFail:
 def _stub_fetch_from(fetcher, source_name):
     """Generic fetch_from for testing _try_fetch directly."""
     return fetcher.fetch_daily_data("600000.SS", "2024-01-01", "2024-12-31")
+
+
+def test_default_daily_query_falls_back_to_baostock_without_mootdx():
+    calls = []
+
+    def eastmoney(*args):
+        calls.append("eastmoney")
+        raise ConnectionError("HTTP source unavailable")
+
+    def baostock(*args):
+        calls.append("baostock")
+        return StubFetcherOK().fetch_daily_data(*args)
+
+    router = SmartRouter()
+    router._fetchers.update({
+        "eastmoney": SimpleNamespace(fetch_daily_bars=eastmoney),
+        "baostock": SimpleNamespace(fetch_unified_daily_data=baostock),
+    })
+    result = router.get_daily_bars("600000.SS", "2024-01-01", "2024-01-02")
+    assert calls == ["eastmoney", "baostock"]
+    assert result.iloc[0]["close"] == 10.5
 
 
 class TestTryFetch:

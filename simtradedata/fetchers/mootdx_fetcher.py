@@ -6,6 +6,7 @@ Mootdx offers real-time quotes, minute bars, and XDXR data that BaoStock lacks.
 """
 
 import logging
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -67,18 +68,54 @@ class MootdxFetcher(BaseFetcher):
     def _do_login(self):
         """Initialize mootdx Quotes client"""
         from mootdx.quotes import Quotes
+        from mootdx.server import connect2, hosts
 
-        self._client = Quotes.factory(
+        client = Quotes.factory(
             market="std",
             multithread=self._multithread,
-            timeout=self._timeout,
+            timeout=min(self._timeout, 1.0),
+            auto_retry=False,
             bestip=False,
             quiet=True,
         )
-        logger.info("Mootdx client initialized")
+        try:
+            if not client.client.get_security_count(0):
+                client.close()
+                deadline = time.monotonic() + self._timeout
+                for host in hosts["HQ"]:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # Reuse vendor candidates and its short protocol-level probe.
+                    if not connect2(dict(host)).get("time"):
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if client.client.connect(
+                        host["addr"], int(host["port"]),
+                        time_out=min(remaining, 1.0),
+                    ):
+                        if client.client.get_security_count(0):
+                            client.server = (host["addr"], int(host["port"]))
+                            break
+                    client.close()
+                else:
+                    raise ConnectionError("No available Mootdx quote server")
+                if time.monotonic() >= deadline:
+                    raise ConnectionError("No available Mootdx quote server within timeout")
+        except Exception:
+            client.close()
+            raise
+        client.client.client.settimeout(self._timeout)
+        client.client.auto_retry = True
+        self._client = client
+        logger.info("Mootdx client initialized: %s", client.server)
 
     def _do_logout(self):
         """Release mootdx client resources"""
+        if self._client is not None:
+            self._client.close()
         self._client = None
 
     def _ensure_client(self):
@@ -151,16 +188,19 @@ class MootdxFetcher(BaseFetcher):
 
         try:
             # Use k() method which supports date range
-            df = self._client.k(
-                symbol=code,
-                begin=start_date.replace("-", ""),
-                end=end_date.replace("-", ""),
-            )
+            try:
+                df = self._client.k(
+                    symbol=code, begin=start_date, end=end_date,
+                )
+            except KeyError as e:
+                # mootdx k() indexes datetime even when its response is empty.
+                if e.args != ("datetime",):
+                    raise
+                df = pd.DataFrame()
 
             if df is None or df.empty:
-                # k() may return empty for date ranges starting in current year
-                # (TDX daily file format limitation). Fall back to bars() which
-                # returns the latest 800 daily bars.
+                # For current-year ranges, retry an empty k() response via
+                # bars(), which returns the latest 800 daily bars.
                 current_year = str(datetime.now().year)
                 if start_date[:4] >= current_year:
                     logger.debug(
@@ -170,7 +210,7 @@ class MootdxFetcher(BaseFetcher):
                         symbol=code,
                         frequency=FREQ_DAILY,
                         start=0,
-                        count=800,
+                        offset=800,
                     )
                 if df is None or df.empty:
                     logger.debug(f"No daily data for {symbol}")

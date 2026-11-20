@@ -1,0 +1,68 @@
+name: Data source health
+
+on:
+  schedule:
+    # 07:17 UTC checks the preceding US session; 15:17 checks CN after its grace period.
+    - cron: '17 7,15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-source-health
+  cancel-in-progress: false
+
+jobs:
+  mootdx-interfaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: uv sync --frozen --dev
+      - name: Probe retained Mootdx interfaces separately
+        run: uv run --frozen python -m scripts.check_mootdx_interfaces --timeout 90 --json-output reports/mootdx-interfaces.json
+      - name: Save retained-interface report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mootdx-interfaces
+          path: reports/mootdx-interfaces.json
+          retention-days: 30
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: uv sync --frozen --dev
+      - name: Probe each provider without fallback
+        run: >-
+          uv run --frozen python -m scripts.check_data_sources
+          --timeout 90 --attempts 2 --json-output reports/data-sources.json
+      - name: Add report to workflow summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f reports/data-sources.json ]; then
+            echo '### Data source health report' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat reports/data-sources.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save health report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-source-health
+          path: reports/data-sources.json
+          retention-days: 30

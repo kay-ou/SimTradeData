@@ -80,25 +80,13 @@ MOOTDX_XDXR_FIELD_MAP = {
 DATA_ROUTING = {
     'market': {
         'target_table': 'stocks',
-        'fields': [
-            'date', 'open', 'high', 'low', 'close', 'preclose', 'volume', 'amount',
-        ],
-        'rename': {
-            'amount': 'money',
-        },
+        'fields': list(MARKET_FIELD_MAP),
+        'rename': {k: v for k, v in MARKET_FIELD_MAP.items() if k != v},
     },
     'valuation': {
         'target_table': 'valuation',
-        'fields': [
-            'date', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'turn',
-        ],
-        'rename': {
-            'peTTM': 'pe_ttm',
-            'pbMRQ': 'pb',
-            'psTTM': 'ps_ttm',
-            'pcfNcfTTM': 'pcf',
-            'turn': 'turnover_rate',
-        },
+        'fields': ['date', *VALUATION_FIELD_MAP],
+        'rename': VALUATION_FIELD_MAP.copy(),
     },
     'status': {
         'target_table': None,  # Stored in memory

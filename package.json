@@ -1,0 +1,10 @@
+{
+  "name": "simtradedata-ci",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "ci:full": "node scripts/cicd/run.mjs"
+  }
+}

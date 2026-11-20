@@ -36,4 +36,6 @@ dev = [
     "pytest-cov>=7.0.0,<8.0.0",
     "pytest-benchmark>=5.1.0,<6.0.0",
     "ruff>=0.15.19,<0.16.0",
+    "exchange-calendars>=4.5,<5",
+    "pytest-socket>=0.7,<1",
 ]

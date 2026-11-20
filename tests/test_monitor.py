@@ -14,6 +14,9 @@ class TestRequestStats:
         stats = monitor.get_stats("mootdx")
         assert stats["total"] == 0
         assert stats["success_rate"] == 0.0
+        assert stats["avg_response_time"] == 0.0
+        assert stats["min_response_time"] == 0.0
+        assert stats["max_response_time"] == 0.0
 
     def test_record_success(self):
         monitor = RequestMonitor()
@@ -69,6 +72,20 @@ class TestRequestStats:
         assert "yfinance" in all_stats
         assert all_stats["mootdx"]["total"] == 1
         assert all_stats["yfinance"]["total"] == 1
+
+    def test_stats_snapshot_stays_independent_of_later_requests(self):
+        monitor = RequestMonitor()
+        monitor.record_request("mootdx", success=True, response_time=2.0)
+        snapshot = monitor.get_stats("mootdx")
+        monitor.record_request("mootdx", success=False, response_time=0.0)
+        current = monitor.get_stats("mootdx")
+
+        assert snapshot["total"] == 1
+        assert snapshot["min_response_time"] == snapshot["max_response_time"] == 2.0
+        assert current["total"] == 2
+        assert current["avg_response_time"] == 1.0
+        assert current["min_response_time"] == 0.0
+        assert current["max_response_time"] == 2.0
 
 
 @pytest.mark.unit

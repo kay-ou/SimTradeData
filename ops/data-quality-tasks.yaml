@@ -1,4 +1,38 @@
 tasks:
+  - id: mootdx_interface_health
+    name: Retained Mootdx interface health
+    level: daily
+    quality_goal: Independently verify stock list, XDXR, realtime quotes, minute bars, financial catalog, and representative quarterly financial content.
+    owner: SimTradeData
+    schedule: daily 07:17 and 15:17 UTC
+    trigger: GitHub Actions schedule or workflow_dispatch
+    systemd_timer:
+    systemd_service:
+    command: uv run --frozen python -m scripts.check_mootdx_interfaces --timeout 90 --json-output reports/mootdx-interfaces.json
+    working_directory: repository checkout
+    logs: GitHub Actions mootdx-interfaces artifact
+    may_contact_baostock: false
+    may_publish: false
+    publish_targets_allowed:
+    failure_policy: Preserve per-interface results; no repair or publishing. Catalog and quarterly-content checks report separate outcomes.
+
+  - id: data_source_health
+    name: Read-only data source health
+    level: daily
+    quality_goal: Detect unavailable providers, daily-bar schema changes, and stale market data without fallback.
+    owner: SimTradeData
+    schedule: daily 07:17 and 15:17 UTC
+    trigger: GitHub Actions schedule or workflow_dispatch
+    systemd_timer:
+    systemd_service:
+    command: uv run --frozen python -m scripts.check_data_sources --timeout 90 --attempts 2 --json-output reports/data-sources.json
+    working_directory: repository checkout
+    logs: GitHub Actions summary and data-source-health artifact
+    may_contact_baostock: true
+    may_publish: false
+    publish_targets_allowed:
+    failure_policy: Fail the workflow and preserve the report; no repair, publishing, or unbounded retry.
+
   - id: daily_cn_data
     name: CN daily data refresh
     level: daily

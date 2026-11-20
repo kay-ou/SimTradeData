@@ -74,10 +74,8 @@ class RequestMonitor:
             stats.total += 1
             stats.total_response_time += response_time
 
-            if response_time < stats.min_response_time:
-                stats.min_response_time = response_time
-            if response_time > stats.max_response_time:
-                stats.max_response_time = response_time
+            stats.min_response_time = min(stats.min_response_time, response_time)
+            stats.max_response_time = max(stats.max_response_time, response_time)
 
             if success:
                 stats.successful += 1
@@ -100,28 +98,17 @@ class RequestMonitor:
         """
         with self._lock:
             stats = self._get_stats(source)
-            success_rate = (
-                stats.successful / stats.total if stats.total > 0 else 0.0
-            )
-            avg_response_time = (
-                stats.total_response_time / stats.total
-                if stats.total > 0
-                else 0.0
-            )
-            # When no requests have been recorded, min_response_time is inf;
-            # report 0.0 instead for a cleaner API.
-            min_rt = (
-                stats.min_response_time
-                if stats.total > 0
-                else 0.0
-            )
+            total = stats.total
             return {
-                "total": stats.total,
+                "total": total,
                 "successful": stats.successful,
                 "failed": stats.failed,
-                "success_rate": success_rate,
-                "avg_response_time": avg_response_time,
-                "min_response_time": min_rt,
+                "success_rate": stats.successful / total if total > 0 else 0.0,
+                "avg_response_time": (
+                    stats.total_response_time / total if total > 0 else 0.0
+                ),
+                # No recorded requests: hide the initial infinite minimum.
+                "min_response_time": stats.min_response_time if total > 0 else 0.0,
                 "max_response_time": stats.max_response_time,
             }
 

@@ -13,9 +13,6 @@ logger = logging.getLogger(__name__)
 RETRYABLE_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
-    ConnectionResetError,
-    ConnectionAbortedError,
-    ConnectionRefusedError,
 )
 
 # Exception types that should never be retried.
@@ -116,7 +113,7 @@ def retry(config: Optional[RetryConfig] = None) -> Callable:
     """Decorator factory that retries a function on retryable errors.
 
     Non-retryable errors are raised immediately without any retry attempt.
-    Retryable errors trigger up to config.max_retries additional attempts
+    Retryable errors trigger up to config.max_retries total attempts
     with exponential backoff between each.
 
     Args:

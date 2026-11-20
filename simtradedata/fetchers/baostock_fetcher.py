@@ -347,7 +347,7 @@ class BaoStockFetcher(BaseFetcher):
             # Solvency
             'currentRatio': 'current_ratio',
             'quickRatio': 'quick_ratio',
-            'liabilityToAsset': 'debt_equity_ratio',
+            'liabilityToAsset': '_liability_to_asset',
             
             # Operating
             'NRTurnRatio': 'accounts_receivables_turnover_rate',
@@ -388,6 +388,13 @@ class BaoStockFetcher(BaseFetcher):
         for field in numeric_fields:
             if field in result.columns:
                 result[field] = pd.to_numeric(result[field], errors='coerce')
+
+        if "_liability_to_asset" in result.columns:
+            ratio = pd.to_numeric(result.pop("_liability_to_asset"), errors="coerce")
+            equity_fraction = 1 - ratio
+            result["debt_equity_ratio"] = ratio / equity_fraction.where(
+                equity_fraction != 0
+            ) * 100
         
         logger.info(f"Fetched fundamentals for {symbol} {year}Q{quarter}: {len(result)} rows")
         return result

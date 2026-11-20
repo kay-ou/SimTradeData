@@ -276,6 +276,55 @@ class SmartRouter:
 
         return self._try_fetch("realtime_quotes", fetch_from, market="cn")
 
+    def get_snapshot(self, security):
+        """Confirmed PTrade Level-1 subset; unavailable fields are omitted."""
+        from simtradedata.fetchers.tdx_snapshot import snapshot_from_quotes
+
+        symbols = [security] if isinstance(security, str) else list(security)
+        if not symbols:
+            return {}
+        return snapshot_from_quotes(self.get_realtime_quotes(symbols))
+
+    def get_gear_price(self, sids):
+        """Five levels; single string returns the book, lists return keyed books."""
+        snapshots = self.get_snapshot(sids)
+        books = {
+            symbol: {side: {level: values[:3] for level, values in snapshot[side].items()}
+                     for side in ["bid_grp", "offer_grp"]}
+            for symbol, snapshot in snapshots.items()
+        }
+        if isinstance(sids, str):
+            return books.get(sids, {"bid_grp": {}, "offer_grp": {}})
+        return books
+
+    def get_blocks(self, filename="block.dat"):
+        """Current TDX classification; does not claim PTrade XBHS equivalence."""
+        return self._try_fetch("blocks", lambda fetcher, _: fetcher.fetch_blocks(filename), market="cn")
+
+    def get_f10_catalog(self, symbol):
+        return self._try_fetch("f10", lambda fetcher, _: fetcher.fetch_f10_catalog(symbol), symbol=symbol)
+
+    def get_f10_detail(self, symbol, name):
+        def fetch_from(fetcher, _):
+            text = fetcher.fetch_f10_detail(symbol, name)
+            return pd.DataFrame({"text": [text]}) if text else pd.DataFrame()
+
+        result = self._try_fetch("f10", fetch_from, symbol=symbol)
+        return None if result.empty else result.iloc[0]["text"]
+
+    def get_history_transactions(self, symbol, date, start=0, offset=800):
+        return self._try_fetch(
+            "history_transactions",
+            lambda fetcher, _: fetcher.fetch_history_transactions(symbol, date, start, offset),
+            symbol=symbol,
+        )
+
+    def get_history_minutes(self, symbol, date):
+        return self._try_fetch(
+            "history_minutes", lambda fetcher, _: fetcher.fetch_history_minutes(symbol, date),
+            symbol=symbol,
+        )
+
     def get_minute_bars(self, symbol, frequency=0, offset=800):
         """Fetch minute-level K-line data.
 

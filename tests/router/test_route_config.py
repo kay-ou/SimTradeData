@@ -18,7 +18,7 @@ class TestRouteConfig:
     def test_daily_bars_cn_has_fallback(self):
         sources = DEFAULT_ROUTE_TABLE["daily_bars"]["cn"]
         assert len(sources) >= 2, "daily_bars/cn should have fallback sources"
-        assert sources == ["eastmoney", "baostock"]
+        assert sources == ["mootdx", "eastmoney", "baostock"]
 
     def test_mootdx_keeps_non_daily_interfaces(self):
         for data_type in [

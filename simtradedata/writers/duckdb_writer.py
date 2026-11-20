@@ -22,6 +22,7 @@ from simtradedata.config.field_mappings import (
     BENCHMARK_HISTORY_FLOOR,
     benchmark_history_ok,
 )
+from simtradedata.config.mootdx_finvalue_map import FULL_FUNDAMENTAL_FIELDS
 from simtradedata.utils.paths import DUCKDB_PATH, safe_rmtree
 from simtradedata.validators.data_validator import validate_before_write
 
@@ -97,6 +98,14 @@ _FUNDAMENTAL_WRITE_COLUMNS = [
     "a_floats",
     *_FUNDAMENTAL_EXTRA_COLUMNS,
 ]
+
+# Keep parser, schema migration, writes and exports aligned for newly mapped fields.
+_ADDITIONAL_MAPPED_COLUMNS = [
+    field for field in FULL_FUNDAMENTAL_FIELDS
+    if field not in _FUNDAMENTAL_WRITE_COLUMNS
+]
+_FUNDAMENTAL_EXTRA_COLUMNS.extend(_ADDITIONAL_MAPPED_COLUMNS)
+_FUNDAMENTAL_WRITE_COLUMNS.extend(_ADDITIONAL_MAPPED_COLUMNS)
 
 _FUNDAMENTAL_EXPORT_EXTRA_SQL = ",\n                ".join(_FUNDAMENTAL_EXTRA_COLUMNS)
 
@@ -1362,7 +1371,7 @@ class DuckDBWriter:
         """
         Fill roa, roe_ttm, roa_ttm from existing fundamentals data.
 
-        - roa = roe / (1 + debt_equity_ratio)
+        - roa = roe / (1 + debt_equity_ratio / 100), with debt/equity in percent
         - roe_ttm = rolling 4-quarter average of roe
         - roa_ttm = rolling 4-quarter average of roa
 
@@ -1376,13 +1385,13 @@ class DuckDBWriter:
             symbol_filter = f"AND symbol IN ({symbols_clause})"
             sub_where = f"WHERE fundamentals.symbol IN ({symbols_clause}) AND (roe IS NOT NULL OR roa IS NOT NULL)"
 
-        # roa = roe / (1 + debt_equity_ratio)
+        # Convert percent debt/equity into a ratio before deriving missing ROA.
         self.conn.execute(f"""
             UPDATE fundamentals
-            SET roa = roe / (1 + debt_equity_ratio)
+            SET roa = roe / (1 + debt_equity_ratio / 100)
             WHERE roe IS NOT NULL
               AND debt_equity_ratio IS NOT NULL
-              AND debt_equity_ratio != -1
+              AND debt_equity_ratio != -100
               AND roa IS NULL
               {symbol_filter}
         """)

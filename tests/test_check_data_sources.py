@@ -139,6 +139,40 @@ def test_probe_cannot_fall_back(monkeypatch):
     assert configs == [{"daily_bars": {"cn": ["eastmoney"]}}]
 
 
+@pytest.mark.parametrize("bad_unit", [None, "price", "volume"])
+def test_mootdx_probe_checks_etf_price_and_volume_units(monkeypatch, bad_unit):
+    symbols = []
+
+    class Router:
+        def __init__(self, config):
+            assert config == {"daily_bars": {"cn": ["mootdx"]}}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get_daily_bars(self, symbol, *args):
+            symbols.append(symbol)
+            data = bars()
+            if symbol == "510300.SS":
+                if bad_unit == "price":
+                    data[["open", "high", "low", "close"]] /= 10
+                elif bad_unit == "volume":
+                    data["volume"] /= 100
+            return data
+
+    monkeypatch.setattr(checks, "SmartRouter", Router)
+    result = checks.probe("mootdx", "2024-07-03", "2024-07-05")
+    assert result["status"] == ("ok" if bad_unit is None else "invalid_data")
+    assert symbols[:2] == ["600000.SS", "510300.SS"]
+    if bad_unit is None:
+        assert symbols[-1] == "159915.SZ"
+    else:
+        assert result["failing_symbol"] == "510300.SS"
+
+
 @pytest.mark.parametrize(
     "error,status",
     [

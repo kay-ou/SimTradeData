@@ -137,14 +137,21 @@ Use GitHub Actions notification settings to receive failed-workflow notification
 There is no automatic email, issue creation, or external messaging integration.
 
 A separate `mootdx-interfaces` job checks the retained Mootdx stock list, XDXR,
-realtime quotes, minute bars, financial catalog, and latest available quarterly
-report. Each interface runs in its own subprocess with a 90-second limit;
+realtime quotes, minute bars, financial catalog, latest available quarterly
+report, adapted snapshots, three block files, F10 text, historical transactions,
+and historical intraday curves. Each interface runs in its own subprocess with a 90-second limit;
 a failed quote endpoint does not prevent the financial tests. The catalog check
 only verifies listing access and schema. The quarterly-content check downloads
 one available quarter into a temporary directory, parses it through the existing
-Affair adapter, and validates `600000` report dates, basic EPS, and total assets.
+Affair adapter, and validates `600000` report dates, basic EPS, total assets,
+goodwill, administration expense, total operating revenue, and diluted EPS.
+See [financial field coverage](PTRADE_FINANCIAL_COVERAGE.md) for units,
+table semantics, and refreshing previously downloaded quarters.
 It does not certify every financial field or quarterly publication timeliness.
 Minute bars are checked against the independent CN exchange calendar.
+Block checks reject malformed codes and duplicate memberships within a file/block.
+Historical transactions and curves retain vendor fields; they do not certify
+Level-2 equivalence or complete history. See [TDX data access](TDX_DATA_ACCESS.md).
 Reports are saved as the `mootdx-interfaces` artifact, separately from daily bars.
 
 ```bash
@@ -152,18 +159,41 @@ uv run --frozen python -m scripts.check_mootdx_interfaces
 uv run --frozen python -m scripts.check_mootdx_interfaces --interfaces xdxr fundamentals --timeout 90
 ```
 
+TDX quote initialization changed: old SDK setup can return a two-byte `20 03`
+body for otherwise compatible market-data requests. A Windows V7.71 client
+uses a `0x000b` initialization request. With that initialization, the original
+SDK daily, minute-bar, and realtime requests returned valid data in independent
+connection tests on 2026-11-20. The extra 16 zero bytes in the desktop client's
+daily request were not required.
+
+The adapter monkeypatches `setup()` on its own TDX API instance, including
+vendor automatic reconnects. It sends a `0x000b` request with a 280-byte decoded
+body of zeros, encoded with the repeating mask inferred from desktop packet
+padding. Independent connections returned valid data without account/device
+fields. No desktop account login, captured private configuration, or GitHub
+secret is required. This updates protocol initialization; it does not remove
+the server connection or initialization step. The framing is based on V7.71
+observations and is monitored by the retained-interface checks for future changes.
+Short rejection responses fail initialization and trigger another server candidate.
+The monkeypatch is instance-local and does not edit or globally patch mootdx/tdxpy.
+
 CN responsibilities: `scripts/download.py` uses the TDX package by default for
 OHLCV, including the existing benchmark import. A supplied `--tdx-source` uses
 the local package instead. Mootdx downloads default to extras only; calendar and
-index queries use BaoStock. SmartRouter daily stock queries use EastMoney then
-BaoStock. Existing Mootdx methods remain available for explicit diagnostics,
-but daily bars are not a default provider or fallback. `--sources mootdx` on the
-daily probe is therefore diagnostic-only. Quote sessions open lazily and are
+index queries use BaoStock. SmartRouter daily stock and ETF queries now prefer
+Mootdx, then fall back to EastMoney and BaoStock on errors or empty responses.
+Daily pagination uses actual bar dates and includes the requested end date;
+TDX-decoded ETF prices are preserved and category-9 lot volume is converted to
+shares/ETF units. Adjustment is applied to the assembled history rather than
+only the latest 800 bars. Quote sessions open lazily and are
 checked with stock metadata at login; each retained endpoint is independently
 validated by the interface job. Affair financial requests need no quote login.
 
-The first version checks one representative daily-bar symbol per provider
-(`600000.SS` for CN and `AAPL.US` for US). Passing does not certify every symbol,
+The daily source workflow checks Mootdx by default, including `600000.SS`,
+`510300.SS`, and `159915.SZ`. ETF traded amount divided by volume must agree
+with the low/high price range within 1%, detecting price/volume scale errors.
+Other providers use one representative symbol (`600000.SS` for CN and
+`AAPL.US` for US). Passing does not certify every symbol,
 financial statement, dividend, money-flow endpoint, or intraday endpoint.
 GitHub-hosted runners may be blocked by CN providers: an availability failure
 identifies a problem from that runner, not proof of a global outage. GitHub

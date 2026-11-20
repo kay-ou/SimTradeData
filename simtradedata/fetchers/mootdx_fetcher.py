@@ -7,17 +7,16 @@ Mootdx offers real-time quotes, minute bars, and XDXR data that BaoStock lacks.
 
 import logging
 import time
-from datetime import datetime
 from typing import List, Optional
 
 import pandas as pd
 
 from simtradedata.fetchers.base_fetcher import BaseFetcher
+from simtradedata.fetchers.mootdx_session import install_session
 from simtradedata.resilience.retry import RetryConfig, retry
 from simtradedata.utils.code_utils import (
     convert_from_ptrade_code,
     get_mootdx_market,
-    get_price_divisor,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,7 +78,15 @@ class MootdxFetcher(BaseFetcher):
             quiet=True,
         )
         try:
-            if not client.client.get_security_count(0):
+            install_session(client.client)
+            client.close()
+            try:
+                connected = client.client.connect(
+                    *client.server, time_out=min(self._timeout, 1.0),
+                )
+            except ConnectionError:
+                connected = False
+            if not connected or not client.client.get_security_count(0):
                 client.close()
                 deadline = time.monotonic() + self._timeout
                 for host in hosts["HQ"]:
@@ -92,10 +99,14 @@ class MootdxFetcher(BaseFetcher):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    if client.client.connect(
-                        host["addr"], int(host["port"]),
-                        time_out=min(remaining, 1.0),
-                    ):
+                    try:
+                        connected = client.client.connect(
+                            host["addr"], int(host["port"]),
+                            time_out=min(remaining, 1.0),
+                        )
+                    except ConnectionError:
+                        connected = False
+                    if connected:
                         if client.client.get_security_count(0):
                             client.server = (host["addr"], int(host["port"]))
                             break
@@ -109,6 +120,8 @@ class MootdxFetcher(BaseFetcher):
             raise
         client.client.client.settimeout(self._timeout)
         client.client.auto_retry = True
+        # After server selection, failed requests must not become empty data.
+        client.client.raise_exception = True
         self._client = client
         logger.info("Mootdx client initialized: %s", client.server)
 
@@ -187,82 +200,65 @@ class MootdxFetcher(BaseFetcher):
         code = convert_from_ptrade_code(symbol, "mootdx")
 
         try:
-            # Use k() method which supports date range
-            try:
-                df = self._client.k(
-                    symbol=code, begin=start_date, end=end_date,
+            begin = pd.Timestamp(start_date).normalize()
+            end = pd.Timestamp(end_date).normalize()
+            if begin > end:
+                raise ValueError("start_date must not be after end_date")
+
+            pages = []
+            offset = 0
+            previous_oldest = None
+            while True:
+                page = self._client.bars(
+                    symbol=code, frequency=FREQ_DAILY, start=offset, offset=800,
                 )
-            except KeyError as e:
-                # mootdx k() indexes datetime even when its response is empty.
-                if e.args != ("datetime",):
-                    raise
-                df = pd.DataFrame()
+                if page is None or page.empty:
+                    break
+                page = page.copy()
+                if "datetime" in page.columns:
+                    dates = page["datetime"]
+                elif "date" in page.columns:
+                    dates = page["date"]
+                elif isinstance(page.index, pd.DatetimeIndex):
+                    dates = page.index.to_series()
+                else:
+                    raise ValueError("Mootdx daily bars have no timestamps")
+                page["date"] = pd.to_datetime(dates).dt.normalize()
+                if page["date"].isna().any() or page["date"].duplicated().any():
+                    raise ValueError("Invalid or duplicate Mootdx daily timestamps")
+                oldest = page["date"].min()
+                if previous_oldest is not None and oldest >= previous_oldest:
+                    raise ValueError("Mootdx historical pagination did not advance")
+                pages.append(page)
+                if oldest <= begin or len(page) < 800:
+                    break
+                previous_oldest = oldest
+                offset += len(page)
 
-            if df is None or df.empty:
-                # For current-year ranges, retry an empty k() response via
-                # bars(), which returns the latest 800 daily bars.
-                current_year = str(datetime.now().year)
-                if start_date[:4] >= current_year:
-                    logger.debug(
-                        f"k() returned empty for {symbol}, falling back to bars()"
-                    )
-                    df = self._client.bars(
-                        symbol=code,
-                        frequency=FREQ_DAILY,
-                        start=0,
-                        offset=800,
-                    )
-                if df is None or df.empty:
-                    logger.debug(f"No daily data for {symbol}")
-                    return pd.DataFrame()
-                if start_date[:4] >= current_year:
-                    if "datetime" in df.columns and "date" not in df.columns:
-                        df = df.rename(columns={"datetime": "date"})
-                    elif "datetime" in df.columns:
-                        df = df.drop(columns=["datetime"])
-                    elif "date" not in df.columns:
-                        df = df.rename_axis("date").reset_index()
+            if not pages:
+                return pd.DataFrame()
+            df = pd.concat(pages, ignore_index=True)
+            df = df.drop_duplicates("date").sort_values("date")
 
-                    if "date" in df.columns:
-                        df["date"] = pd.to_datetime(df["date"])
-                        df = df[
-                            (df["date"] >= start_date) & (df["date"] <= end_date)
-                        ]
-
-            # mootdx k() returns 'date' as both index and column; drop index
-            df = df.reset_index(drop=True)
-
-            # Apply adjustment if requested
+            # Apply vendor adjustment to the assembled history, not one 800-bar page.
             if adjust:
-                df_adj = self._client.bars(
-                    symbol=code,
-                    frequency=FREQ_DAILY,
-                    adjust=adjust,
-                )
-                if df_adj is not None and not df_adj.empty:
-                    df = df_adj
+                from mootdx.utils.adjust import to_adjust
 
-            # Standardize column names
+                df = df.set_index("date", drop=False)
+                df["datetime"] = df.index
+                original_dates = df.index
+                df = to_adjust(df, symbol=code, adjust=adjust).reindex(original_dates)
+                df["date"] = df.index
+
+            # tdxpy already decodes ETF/LOF prices into currency units.
             if "volume" in df.columns and "vol" in df.columns:
                 df = df.drop(columns=["vol"])
-            df = df.rename(
-                columns={
-                    "datetime": "date",
-                    "vol": "volume",
-                }
-            )
-
-            # Apply price divisor for ETF/LOF (TDX returns 10x prices)
-            divisor = get_price_divisor(symbol)
-            if divisor != 1.0:
-                for col in ("open", "high", "low", "close"):
-                    if col in df.columns:
-                        df[col] = df[col] / divisor
-
-            # Convert date column
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-                df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+            df = df.rename(columns={"vol": "volume"})
+            # Category 9 uses 100-share/ETF-unit lots; other daily sources use units.
+            df["volume"] = pd.to_numeric(df["volume"]) * 100
+            df = df.drop(columns=["datetime"], errors="ignore")
+            df = df[(df["date"] >= begin) & (df["date"] <= end)]
+            df = df.reset_index(drop=True)
 
             logger.info(f"Fetched {len(df)} daily bars for {symbol}")
             return df
@@ -301,6 +297,8 @@ class MootdxFetcher(BaseFetcher):
             if df is None or df.empty:
                 return pd.DataFrame()
 
+            if "volume" in df.columns and "vol" in df.columns:
+                df = df.drop(columns=["vol"])
             df = df.rename(columns={"datetime": "date", "vol": "volume"})
 
             logger.info(f"Fetched {len(df)} minute bars for {symbol}")
@@ -325,17 +323,28 @@ class MootdxFetcher(BaseFetcher):
             return pd.DataFrame()
         self._ensure_client()
 
-        codes = [convert_from_ptrade_code(s, "mootdx") for s in symbols]
+        if not symbols:
+            return pd.DataFrame()
+        securities = [
+            (get_mootdx_market(s), convert_from_ptrade_code(s, "mootdx"))
+            for s in symbols
+        ]
+        requested = dict(zip(securities, symbols))
 
         try:
-            df = self._client.quotes(symbol=codes)
+            rows = []
+            for start in range(0, len(securities), 80):
+                rows.extend(self._client.client.get_security_quotes(securities[start:start + 80]) or [])
+            df = pd.DataFrame(rows)
 
             if df is None or df.empty:
                 return pd.DataFrame()
 
-            # Add PTrade codes for reference
-            if "code" in df.columns:
-                df["ptrade_code"] = symbols[: len(df)]
+            # Identify returned securities, even when the server skips/reorders rows.
+            df["ptrade_code"] = [requested.get((row.market, row.code)) for row in df.itertuples()]
+            df = df.dropna(subset=["ptrade_code"])
+            if "vol" in df.columns:
+                df["volume"] = df["vol"]
 
             logger.info(f"Fetched real-time quotes for {len(df)} stocks")
             return df
@@ -387,7 +396,7 @@ class MootdxFetcher(BaseFetcher):
             symbol: Stock code in PTrade format
 
         Returns:
-            DataFrame with financial data (FINVALUE array values)
+            DataFrame with TDX financial-summary fields (not the FINVALUE array)
         """
         if not self._ensure_source_available():
             return pd.DataFrame()
@@ -585,6 +594,56 @@ class MootdxFetcher(BaseFetcher):
             logger.error(f"Failed to calculate adjust factor for {symbol}: {e}")
             raise
 
+    @retry(config=_MOOTDX_RETRY)
+    def fetch_blocks(self, filename: str = "block.dat") -> pd.DataFrame:
+        """Current TDX memberships; not historical constituents or XBHS codes."""
+        from simtradedata.fetchers.tdx_blocks import parse_blocks
+
+        if filename not in {"block.dat", "block_zs.dat", "block_fg.dat"}:
+            raise ValueError("Unsupported TDX block file")
+        if not self._ensure_source_available():
+            return pd.DataFrame()
+        self._ensure_client()
+        api = self._client.client
+        meta = api.get_block_info_meta(filename)
+        if not meta:
+            return pd.DataFrame()
+        size = meta["size"]
+        data = bytearray()
+        while len(data) < size:
+            piece = api.get_block_info(filename, len(data), min(60000, size - len(data)))
+            if not piece:
+                raise ConnectionError("Incomplete TDX block download")
+            data.extend(piece[:size - len(data)])
+        return parse_blocks(data)
+
+    @retry(config=_MOOTDX_RETRY)
+    def fetch_history_transactions(self, symbol: str, date: str, start=0, offset=800) -> pd.DataFrame:
+        """Raw ordinary trades: HH:MM and vendor direction, not Level-2."""
+        if start < 0 or not 1 <= offset <= 2000:
+            raise ValueError("Invalid transaction page")
+        if not self._ensure_source_available():
+            return pd.DataFrame()
+        self._ensure_client()
+        code = convert_from_ptrade_code(symbol, "mootdx")
+        date = pd.Timestamp(date).strftime("%Y%m%d")
+        result = self._client.client.get_history_transaction_data(
+            get_mootdx_market(symbol), code, start, offset, int(date),
+        )
+        return pd.DataFrame(result)
+
+    @retry(config=_MOOTDX_RETRY)
+    def fetch_history_minutes(self, symbol: str, date: str) -> pd.DataFrame:
+        """Raw historical intraday price/volume curve, not minute OHLC bars."""
+        if not self._ensure_source_available():
+            return pd.DataFrame()
+        self._ensure_client()
+        code = convert_from_ptrade_code(symbol, "mootdx")
+        result = self._client.client.get_history_minute_time_data(
+            get_mootdx_market(symbol), code, int(pd.Timestamp(date).strftime("%Y%m%d")),
+        )
+        return pd.DataFrame(result)
+
     def fetch_f10_catalog(self, symbol: str) -> pd.DataFrame:
         """
         Fetch F10 company information catalog.
@@ -603,7 +662,7 @@ class MootdxFetcher(BaseFetcher):
 
         try:
             df = self._client.F10C(symbol=code)
-            return df if df is not None else pd.DataFrame()
+            return pd.DataFrame(df) if df is not None else pd.DataFrame()
         except Exception as e:
             logger.error(f"Failed to fetch F10 catalog for {symbol}: {e}")
             raise

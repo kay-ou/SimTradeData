@@ -65,8 +65,15 @@ def _stub_fetch_from(fetcher, source_name):
     return fetcher.fetch_daily_data("600000.SS", "2024-01-01", "2024-12-31")
 
 
-def test_default_daily_query_falls_back_to_baostock_without_mootdx():
+@pytest.mark.parametrize("first_result", ["error", "empty"])
+def test_default_daily_query_falls_back_from_mootdx_to_baostock(first_result):
     calls = []
+
+    def mootdx(*args):
+        calls.append("mootdx")
+        if first_result == "error":
+            raise ConnectionError("TDX source unavailable")
+        return pd.DataFrame()
 
     def eastmoney(*args):
         calls.append("eastmoney")
@@ -78,11 +85,42 @@ def test_default_daily_query_falls_back_to_baostock_without_mootdx():
 
     router = SmartRouter()
     router._fetchers.update({
+        "mootdx": SimpleNamespace(fetch_daily_data=mootdx),
         "eastmoney": SimpleNamespace(fetch_daily_bars=eastmoney),
         "baostock": SimpleNamespace(fetch_unified_daily_data=baostock),
     })
     result = router.get_daily_bars("600000.SS", "2024-01-01", "2024-01-02")
-    assert calls == ["eastmoney", "baostock"]
+    assert calls == ["mootdx", "eastmoney", "baostock"]
+    assert result.iloc[0]["close"] == 10.5
+
+
+def test_default_daily_query_uses_mootdx_before_http_sources():
+    router = SmartRouter()
+    router._fetchers.update({
+        "mootdx": StubFetcherOK(),
+        "eastmoney": SimpleNamespace(
+            fetch_daily_bars=lambda *args: pytest.fail("Unexpected fallback")
+        ),
+        "baostock": SimpleNamespace(
+            fetch_unified_daily_data=lambda *args: pytest.fail("Unexpected fallback")
+        ),
+    })
+    result = router.get_daily_bars("510300.SS", "2024-01-01", "2024-01-02")
+    assert result.iloc[0]["close"] == 10.5
+
+
+def test_default_daily_query_uses_eastmoney_when_mootdx_is_empty():
+    router = SmartRouter()
+    router._fetchers.update({
+        "mootdx": StubFetcherEmpty(),
+        "eastmoney": SimpleNamespace(
+            fetch_daily_bars=StubFetcherOK().fetch_daily_data
+        ),
+        "baostock": SimpleNamespace(
+            fetch_unified_daily_data=lambda *args: pytest.fail("Unexpected fallback")
+        ),
+    })
+    result = router.get_daily_bars("510300.SS", "2024-01-01", "2024-01-02")
     assert result.iloc[0]["close"] == 10.5
 
 

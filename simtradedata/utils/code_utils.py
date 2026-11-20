@@ -117,8 +117,8 @@ def get_mootdx_market(symbol: str) -> int:
         symbol: Stock code in PTrade format (e.g., '000001.SZ', '600000.SS')
 
     Returns:
-        0 for Shenzhen (codes starting with 0/1/2/3)
-        1 for Shanghai (codes starting with 5/6/7/8/9)
+        0 for Shenzhen, 1 for Shanghai, 2 for Beijing.
+        Prefer an explicit PTrade suffix; infer by prefix for bare codes.
 
     Examples:
         >>> get_mootdx_market('000001.SZ')
@@ -126,7 +126,12 @@ def get_mootdx_market(symbol: str) -> int:
         >>> get_mootdx_market('600000.SS')
         1
     """
-    code = symbol.split(".")[0] if "." in symbol else symbol
+    if "." in symbol:
+        code, suffix = symbol.rsplit(".", 1)
+        if suffix in {"SS", "SZ", "BJ"}:
+            return {"SS": 1, "SZ": 0, "BJ": 2}[suffix]
+    else:
+        code = symbol
     return 0 if code[0] in "0123" else 1
 
 

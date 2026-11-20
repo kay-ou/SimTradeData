@@ -22,7 +22,7 @@ SOURCES = {
     "baostock": ("cn", "600000.SS"),
     "yfinance": ("us", "AAPL.US"),
 }
-DEFAULT_SOURCES = ["eastmoney", "baostock", "yfinance"]
+DEFAULT_SOURCES = ["mootdx", "eastmoney", "baostock", "yfinance"]
 CALENDARS = {"cn": "XSHG", "us": "XNYS"}
 # Allow CN end-of-day processing and US daily-bar publication to finish.
 UPDATE_GRACE_HOURS = {"cn": 6, "us": 2}
@@ -118,9 +118,33 @@ def probe(source: str, expected: str | None, end: str) -> dict:
         # One source only: the production adapters run without fallback.
         with SmartRouter(config={"daily_bars": {market: [source]}}) as router:
             df = router.get_daily_bars(symbol, start, end)
-        today = (pd.Timestamp(end) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        # Yahoo uses a date index and does not expose actual traded amount.
-        result = validate_bars(df, expected, today, require_amount=source != "yfinance")
+            today = (pd.Timestamp(end) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            # Yahoo uses a date index and does not expose actual traded amount.
+            result = validate_bars(df, expected, today, require_amount=source != "yfinance")
+            if source == "mootdx" and result["status"] == "ok":
+                samples = []
+                for etf in ["510300.SS", "159915.SZ"]:
+                    data = router.get_daily_bars(etf, start, end)
+                    sample = validate_bars(data, expected, today)
+                    if sample["status"] == "ok":
+                        active = pd.to_numeric(data["volume"]) > 0
+                        average = (
+                            pd.to_numeric(data.loc[active, "amount"])
+                            / pd.to_numeric(data.loc[active, "volume"])
+                        )
+                        if not average.between(
+                            pd.to_numeric(data.loc[active, "low"]) * 0.99,
+                            pd.to_numeric(data.loc[active, "high"]) * 1.01,
+                        ).all():
+                            sample = {
+                                "status": "invalid_data",
+                                "detail": "ETF price/volume units disagree with traded amount",
+                            }
+                    samples.append({"symbol": etf, **sample})
+                    if sample["status"] != "ok":
+                        result = {**sample, "failing_symbol": etf}
+                        break
+                result["etf_samples"] = samples
     except Exception as error:
         message = str(error)
         lower = message.lower()

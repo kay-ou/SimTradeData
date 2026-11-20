@@ -11,7 +11,7 @@ FETCHER_REGISTRY = {
 # data_type -> market -> [source priority list]
 DEFAULT_ROUTE_TABLE = {
     "daily_bars": {
-        "cn": ["eastmoney", "baostock"],
+        "cn": ["mootdx", "eastmoney", "baostock"],
         "us": ["yfinance"],
     },
     "xdxr": {
@@ -50,4 +50,8 @@ DEFAULT_ROUTE_TABLE = {
     "minute_bars": {
         "cn": ["mootdx"],
     },
+    "blocks": {"cn": ["mootdx"]},
+    "f10": {"cn": ["mootdx"]},
+    "history_transactions": {"cn": ["mootdx"]},
+    "history_minutes": {"cn": ["mootdx"]},
 }

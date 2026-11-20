@@ -240,6 +240,21 @@ class MootdxUnifiedFetcher:
         """
         return self._quotes_fetcher.fetch_realtime_quotes(symbols)
 
+    def fetch_blocks(self, filename="block.dat") -> pd.DataFrame:
+        return self._quotes_fetcher.fetch_blocks(filename)
+
+    def fetch_f10_catalog(self, symbol) -> pd.DataFrame:
+        return self._quotes_fetcher.fetch_f10_catalog(symbol)
+
+    def fetch_f10_detail(self, symbol, name):
+        return self._quotes_fetcher.fetch_f10_detail(symbol, name)
+
+    def fetch_history_transactions(self, symbol, date, start=0, offset=800) -> pd.DataFrame:
+        return self._quotes_fetcher.fetch_history_transactions(symbol, date, start, offset)
+
+    def fetch_history_minutes(self, symbol, date) -> pd.DataFrame:
+        return self._quotes_fetcher.fetch_history_minutes(symbol, date)
+
     def fetch_minute_bars(
         self,
         symbol: str,

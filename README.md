@@ -129,7 +129,7 @@ A single command downloads all data, using the TDX daily package for the fast OH
 # BaoStock: valuation, status, constituents, calendar, benchmark queries
 uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
 
-# Default command also uses TDX OHLCV; package failure never re-enables Mootdx daily bars
+# Default bulk download also uses TDX OHLCV; package failure does not switch to per-symbol downloads
 uv run python scripts/download.py
 
 # Use an already-downloaded TDX ZIP file
@@ -153,7 +153,7 @@ uv run python scripts/download.py --source baostock
 | Data Type | Source | Reason |
 |-----------|--------|--------|
 | OHLCV Market Data (daily/full history) | TDX Daily Package | Fastest, ~500MB bulk import of full history and latest daily data |
-| OHLCV Market Data (per-symbol queries) | EastMoney, then BaoStock | Independent HTTP/BaoStock daily queries; Mootdx daily bars are disabled in default routing |
+| OHLCV Market Data (per-symbol queries) | Mootdx, then EastMoney and BaoStock | Anonymous TDX initialization; paginated stock/ETF history with HTTP/BaoStock fallbacks |
 | Corporate Actions (XDXR) | Mootdx | More complete data |
 | Bulk Financial Data | Mootdx | One ZIP = all stocks, far better than per-stock queries |
 | Valuation PE/PB/PS/Turnover | BaoStock | Exclusive data |

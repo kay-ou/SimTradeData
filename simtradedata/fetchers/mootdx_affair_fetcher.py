@@ -208,7 +208,17 @@ class MootdxAffairFetcher:
         for finvalue_idx, (ptrade_name, desc, unit) in FINVALUE_TO_PTRADE.items():
             if ptrade_name.startswith("_") or ptrade_name in target_fields:
                 if isinstance(finvalue_idx, int) and finvalue_idx < num_columns:
-                    result_data[ptrade_name] = raw_df.iloc[:, finvalue_idx].values
+                    values = raw_df.iloc[:, finvalue_idx]
+                    if unit == "wan_yuan":
+                        values = pd.to_numeric(values, errors="coerce") * 10000
+                    result_data[ptrade_name] = values.values
+
+        if "debt_equity_ratio" in target_fields and num_columns > 72:
+            liabilities = pd.to_numeric(raw_df.iloc[:, 63], errors="coerce")
+            equity = pd.to_numeric(raw_df.iloc[:, 72], errors="coerce")
+            result_data["debt_equity_ratio"] = (
+                liabilities / equity.where(equity != 0) * 100
+            ).values
 
         if not result_data:
             logger.warning("No matching columns found in raw data")

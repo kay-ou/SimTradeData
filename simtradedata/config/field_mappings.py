@@ -48,7 +48,7 @@ FUNDAMENTAL_FIELD_MAP = {
     # From balance data
     "currentRatio": "current_ratio",
     "quickRatio": "quick_ratio",
-    "liabilityToAsset": "debt_equity_ratio",
+    "liabilityToAsset": "_liability_to_asset",  # Derived into debt/equity by the fetcher
     # From operation data
     "ARTurnRatio": "accounts_receivables_turnover_rate",
     "INVTurnRatio": "inventory_turnover_rate",

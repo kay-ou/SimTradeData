@@ -18,6 +18,7 @@ import pandas as pd
 from scripts.check_data_sources import latest_due_session, write_json
 from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
 from simtradedata.fetchers.mootdx_unified_fetcher import MootdxUnifiedFetcher
+from simtradedata.fetchers.tdx_snapshot import snapshot_from_quotes
 
 INTERFACES = [
     "stock_list",
@@ -26,18 +27,47 @@ INTERFACES = [
     "minute_bars",
     "financial_catalog",
     "fundamentals",
+    "snapshot",
+    "blocks",
+    "f10",
+    "history_transactions",
+    "history_minutes",
+]
+FUNDAMENTAL_PROBE_FIELDS = [
+    "basic_eps", "total_assets", "good_will", "administration_expense",
+    "total_operating_revenue", "diluted_eps",
 ]
 REQUIRED = {
     "xdxr": {"category", "year", "month", "day"},
     "realtime_quotes": {"code", "price"},
     "minute_bars": {"open", "high", "low", "close", "volume"},
-    "fundamentals": {"code", "end_date", "basic_eps", "total_assets"},
+    "fundamentals": {"code", "end_date", *FUNDAMENTAL_PROBE_FIELDS},
+    "blocks": {"filename", "blockname", "block_type", "code"},
+    "f10": {"text"},
+    "history_transactions": {"time", "price", "vol", "buyorsell"},
+    "history_minutes": {"price", "vol"},
 }
 
 
 def validate_result(name: str, data) -> dict:
     if len(data) == 0:
         return {"status": "empty", "detail": "No records returned"}
+    if name == "snapshot":
+        if not isinstance(data, dict):
+            return {"status": "schema_error", "detail": "Expected keyed snapshots"}
+        valid = all(
+            snapshot.get("last_px", 0) > 0
+            and snapshot.get("business_amount", -1) >= 0
+            and all(
+                set(snapshot.get(side, {})) == set(range(1, 6))
+                and all(len(level) >= 3 and level[1] >= 0 and level[2] == 0
+                        for level in snapshot[side].values())
+                for side in ["bid_grp", "offer_grp"]
+            )
+            for snapshot in data.values()
+        )
+        return {"status": "ok" if valid else "invalid_data", "rows": len(data),
+                "scope": "Confirmed Level-1 subset; no Level-2 or full snapshot equivalence"}
     if name == "financial_catalog":
         if not all(
             isinstance(row, dict)
@@ -68,7 +98,21 @@ def validate_result(name: str, data) -> dict:
             "status": "schema_error",
             "detail": f"Missing fields: {sorted(missing)}",
         }
-    if name == "fundamentals":
+    if name == "blocks":
+        valid = (
+            data["code"].str.fullmatch(r"\d{6}").all()
+            and not data.duplicated(["filename", "blockname", "code"]).any()
+        )
+    elif name == "f10":
+        valid = data["text"].map(lambda text: isinstance(text, str) and len(text) > 100).all()
+    elif name in {"history_minutes", "history_transactions"}:
+        values = data[["price", "vol"]].apply(pd.to_numeric, errors="coerce")
+        valid = np.isfinite(values).all().all() and (values["price"] > 0).all() and (values["vol"] >= 0).all()
+        if name == "history_transactions":
+            valid = valid and data["time"].str.fullmatch(r"\d{2}:\d{2}").all()
+        return {"status": "ok" if valid else "invalid_data", "rows": len(data),
+                "scope": "Requested recent trading day; raw vendor fields, not Level-2 or minute OHLC"}
+    elif name == "fundamentals":
         sample = data[data["code"].astype(str) == "600000"]
         if sample.empty:
             return {
@@ -76,7 +120,7 @@ def validate_result(name: str, data) -> dict:
                 "detail": "Representative stock missing from financial report",
             }
         dates = pd.to_datetime(sample["end_date"], errors="coerce")
-        values = sample[["basic_eps", "total_assets"]].apply(pd.to_numeric, errors="coerce")
+        values = sample[FUNDAMENTAL_PROBE_FIELDS].apply(pd.to_numeric, errors="coerce")
         valid = dates.notna().all() and np.isfinite(values).all().all()
     elif name == "realtime_quotes":
         price = pd.to_numeric(data["price"], errors="coerce")
@@ -141,7 +185,7 @@ def probe_interface(name: str) -> dict:
                     filename = max(filenames)
                     year, month = int(filename[4:8]), int(filename[8:10])
                     data = fetcher.fetch_fundamentals_for_quarter(
-                        year, month // 3, fields=["basic_eps", "total_assets"]
+                        year, month // 3, fields=FUNDAMENTAL_PROBE_FIELDS
                     )
         else:
             with MootdxUnifiedFetcher() as fetcher:
@@ -151,7 +195,24 @@ def probe_interface(name: str) -> dict:
                     data = fetcher.fetch_xdxr("600000.SS")
                 elif name == "realtime_quotes":
                     data = fetcher.fetch_realtime_quotes(["600000.SS"])
-                else:
+                elif name == "snapshot":
+                    data = snapshot_from_quotes(fetcher.fetch_realtime_quotes(["600000.SS", "510300.SS"]))
+                elif name == "blocks":
+                    data = pd.concat([
+                        fetcher.fetch_blocks(filename).assign(filename=filename)
+                        for filename in ["block.dat", "block_zs.dat", "block_fg.dat"]
+                    ], ignore_index=True)
+                elif name == "f10":
+                    catalog = fetcher.fetch_f10_catalog("600000.SS")
+                    text = fetcher.fetch_f10_detail("600000.SS", "最新提示")
+                    data = pd.DataFrame({"text": [text]}) if not catalog.empty else pd.DataFrame()
+                elif name in {"history_transactions", "history_minutes"}:
+                    date = latest_due_session("cn", pd.Timestamp.now(tz="UTC"))
+                    if name == "history_transactions":
+                        data = fetcher.fetch_history_transactions("600000.SS", date, offset=20)
+                    else:
+                        data = fetcher.fetch_history_minutes("600000.SS", date)
+                elif name == "minute_bars":
                     data = fetcher.fetch_minute_bars(
                         "600000.SS", frequency=0, offset=50
                     )

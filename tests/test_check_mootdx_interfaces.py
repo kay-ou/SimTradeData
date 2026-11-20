@@ -11,8 +11,10 @@ from scripts import check_mootdx_interfaces as checks
 from scripts import check_data_sources
 
 
-def test_daily_monitor_excludes_retired_source():
-    assert check_data_sources.DEFAULT_SOURCES == ["eastmoney", "baostock", "yfinance"]
+def test_daily_monitor_includes_restored_mootdx():
+    assert check_data_sources.DEFAULT_SOURCES == [
+        "mootdx", "eastmoney", "baostock", "yfinance",
+    ]
 
 
 def test_catalog_probe_does_not_login_quotes(monkeypatch):
@@ -39,11 +41,16 @@ def test_financial_content_is_downloaded_and_checked_independently(monkeypatch):
             "end_date": ["2026-09-30"],
             "basic_eps": [1.0],
             "total_assets": [100.0],
+            "good_will": [0.0],
+            "administration_expense": [5.0],
+            "total_operating_revenue": [50.0],
+            "diluted_eps": [1.0],
         }
     )
 
     def fetch(year, quarter, **kwargs):
         calls.append((year, quarter))
+        assert kwargs["fields"] == checks.FUNDAMENTAL_PROBE_FIELDS
         return frame
 
     monkeypatch.setattr(
@@ -81,6 +88,18 @@ def test_financial_content_is_downloaded_and_checked_independently(monkeypatch):
 )
 def test_result_validation(interface, data, status):
     assert checks.validate_result(interface, data)["status"] == status
+
+
+@pytest.mark.parametrize("name,data,status", [
+    ("snapshot", {"600000.SS": {"last_px": 10}}, "invalid_data"),
+    ("blocks", pd.DataFrame({"filename": ["block.dat"], "blockname": ["测试"], "block_type": [2], "code": ["bad"]}), "invalid_data"),
+    ("blocks", pd.DataFrame({"filename": ["block.dat"] * 2, "blockname": ["测试"] * 2, "block_type": [2] * 2, "code": ["600000"] * 2}), "invalid_data"),
+    ("f10", pd.DataFrame({"text": [None]}), "invalid_data"),
+    ("history_transactions", pd.DataFrame({"time": ["09:31"], "price": [10], "vol": [2], "buyorsell": [5]}), "ok"),
+    ("history_minutes", pd.DataFrame({"price": [10], "vol": [-2]}), "invalid_data"),
+])
+def test_extra_interface_health_rejects_invalid_content(name, data, status):
+    assert checks.validate_result(name, data)["status"] == status
 
 
 def test_minute_bars_allow_multiple_rows_in_same_day(monkeypatch):

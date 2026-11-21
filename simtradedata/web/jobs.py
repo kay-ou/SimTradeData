@@ -36,6 +36,7 @@ class JobManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.active = None
+        self.restarting = False
         self.process = None
         self.plans = {}
         self.cache = {}
@@ -89,6 +90,8 @@ class JobManager:
 
     def start(self, plan_id):
         with self.lock:
+            if self.restarting:
+                raise RuntimeError("管理台正在重启，请稍候")
             if self.active:
                 raise RuntimeError("已有更新任务运行")
             cached = self.plans.pop(plan_id, None)
@@ -103,7 +106,8 @@ class JobManager:
                 request_file = Path(temporary.name)
             job = {"id": job_id, "request": plan["request"], "status": "running", "stage": "prepare",
                    "started_at": now(), "ended_at": None, "completed": 0, "total": plan["unit_count"],
-                   "message": "准备后台任务", "logs": [], "before": summary(plan["before"]), "after": None}
+                   "message": "准备后台任务", "overall_completed": 0, "overall_total": plan["unit_count"] if plan["request"]["dataset"] in {"fundamentals", "pcf"} or plan["request"]["mode"] == "repair" else None,
+                   "unit_label": "季度" if plan["request"]["dataset"] == "fundamentals" else "份清单" if plan["request"]["dataset"] == "pcf" else "个证券" if plan["request"]["mode"] == "repair" else "处理单元", "logs": [], "before": summary(plan["before"]), "after": None}
             if plan.get("needs_calendar"):
                 for row in job["before"]:
                     if row["key"] == "pcf":
@@ -135,11 +139,11 @@ class JobManager:
                 with self.lock:
                     if line.startswith(EVENT_PREFIX):
                         event = json.loads(line[len(EVENT_PREFIX):])
-                        if event.get("stage") != job["stage"]:
+                        if event.get("stage") != job["stage"] or ("current_unit" in event and event["current_unit"] != job.get("current_unit")):
                             for field in ["downloaded_bytes", "total_bytes", "bytes_per_second"]:
                                 job.pop(field, None)
                         job.update({key: event[key] for key in ["stage", "message", "completed", "total", "written", "result",
-                                                              "downloaded_bytes", "total_bytes", "bytes_per_second"] if key in event})
+                                                              "downloaded_bytes", "total_bytes", "bytes_per_second", "overall_completed", "overall_total", "current_unit"] if key in event})
                     else:
                         job["logs"].append(line[-2000:])
                         job["logs"] = job["logs"][-300:]

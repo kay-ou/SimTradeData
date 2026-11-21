@@ -63,7 +63,7 @@ def daily_cache_date(path):
     return day
 
 
-def fetch_financial_with_progress(fetcher, filename, total_hint=None):
+def fetch_financial_with_progress(fetcher, filename, total_hint=None, timings=None):
     from mootdx.affair import Affair
 
     if not total_hint:
@@ -71,14 +71,24 @@ def fetch_financial_with_progress(fetcher, filename, total_hint=None):
             total_hint = next((row.get("filesize") for row in fetcher.list_available_reports() if row["filename"] == filename), None)
         except Exception:
             pass
+    started = time.perf_counter()
     Affair.fetch.__globals__["financial"].Financial().fetch_only(
         downdir=str(fetcher._download_dir), filename=filename,
         report_hook=download_progress(f"下载财务包 {filename}", total_hint),
     )
-    return fetcher._convert_to_ptrade_format(fetcher.parse_local(filename))
+    if timings is not None:
+        timings["download"] += time.perf_counter() - started
+    started = time.perf_counter()
+    frame = fetcher._convert_to_ptrade_format(fetcher.parse_local(filename))
+    if timings is not None:
+        timings["parse"] += time.perf_counter() - started
+    return frame
 
 
 def update_daily(data_dir, plan):
+    if plan['request']['mode'] == 'repair':
+        from simtradedata.web.daily_repair import repair_daily
+        return repair_daily(data_dir, plan)
     from scripts.download_tdx_day import DOWNLOAD_URL, download_file, get_remote_file_info, needs_update
     from scripts.import_tdx_day import TdxDayImporter, filename_to_ptrade_code, is_stock_code, iter_day_files_from_zip, parse_tdx_day_file
     from simtradedata.utils.code_utils import is_etf_code
@@ -183,6 +193,7 @@ def update_fundamentals(data_dir, plan):
     expected_counts = {(year, quarter): count for year, quarter, count in writer.conn.execute("SELECT year, quarter, stock_count FROM fundamentals_progress").fetchall()}
     actual_counts = {str(day): count for day, count in writer.conn.execute("SELECT date, COUNT(*) FROM fundamentals GROUP BY date").fetchall()}
     failures, written, skipped = [], 0, 0
+    timings = {"download": 0.0, "parse": 0.0, "write": 0.0}
     try:
         for index, day in enumerate(plan["units"], 1):
             stamp = pd.Timestamp(day)
@@ -194,38 +205,47 @@ def update_fundamentals(data_dir, plan):
             matching = recorded == signature if signature else recorded.startswith("local:") and recorded.endswith(mapping)
             if request["mode"] == "auto" and matching and (year, quarter) in completed and actual_counts.get(day, 0) >= expected_counts.get((year, quarter), 1):
                 skipped += 1
-                emit(stage="write", message=f"{day} 已导入且缓存未变化，跳过", completed=index, total=plan["unit_count"])
+                emit(stage="write", message=f"{day} 已导入且缓存未变化，跳过", completed=index, total=plan["unit_count"], current_unit=None, overall_completed=index, overall_total=plan["unit_count"])
                 continue
             if request["mode"] == "incremental" and (year, quarter) in completed and index <= len(plan["units"]) - 4:
                 skipped += 1
-                emit(stage="write", message=f"跳过已完成季度 {day}", completed=index, total=plan["unit_count"])
+                emit(stage="write", message=f"跳过已完成季度 {day}", completed=index, total=plan["unit_count"], current_unit=None, overall_completed=index, overall_total=plan["unit_count"])
                 continue
             try:
-                emit(stage="download", message=f"读取财务季度 {day}", completed=index - 1, total=plan["unit_count"])
+                emit(stage="download", message=f"读取财务季度 {day}", completed=0, total=None, current_unit=day, overall_completed=index - 1, overall_total=plan["unit_count"])
                 if request["mode"] == "reparse":
+                    started = time.perf_counter()
                     frame = fetcher._convert_to_ptrade_format(fetcher.parse_local(filename))
+                    timings["parse"] += time.perf_counter() - started
                 elif request["mode"] == "auto" and cached.exists():
+                    started = time.perf_counter()
                     try:
                         frame = fetcher._convert_to_ptrade_format(fetcher.parse_local(filename))
                         if frame.empty or "end_date" not in frame or set(pd.to_datetime(frame["end_date"]).dt.strftime("%Y-%m-%d")) != {day}:
                             raise ValueError("缓存报告期不匹配")
                     except Exception:
-                        frame = fetch_financial_with_progress(fetcher, filename, sizes.get(filename))
+                        timings["parse"] += time.perf_counter() - started
+                        frame = fetch_financial_with_progress(fetcher, filename, sizes.get(filename), timings)
+                    else:
+                        timings["parse"] += time.perf_counter() - started
                 else:
-                    frame = fetch_financial_with_progress(fetcher, filename, sizes.get(filename))
+                    frame = fetch_financial_with_progress(fetcher, filename, sizes.get(filename), timings)
                 if frame.empty or "code" not in frame or set(pd.to_datetime(frame["end_date"]).dt.strftime("%Y-%m-%d")) != {day}:
                     raise ValueError("季度源为空或报告期不匹配")
                 if "total_assets" not in frame or frame["total_assets"].isna().all():
                     raise ValueError("季度源缺少可用资产总额")
+                started = time.perf_counter()
                 writer.begin()
                 count = 0
                 try:
                     total_companies = frame["code"].nunique()
+                    batch = {}
                     for company, (code, group) in enumerate(frame.groupby("code"), 1):
                         symbol = convert_to_ptrade_code(str(code), "qstock")
-                        writer.write_fundamentals(symbol, group.drop(columns=["code"]).set_index("end_date"))
-                        count += len(group)
-                        if company % 100 == 0 or company == total_companies:
+                        batch[symbol] = group.drop(columns=["code"]).set_index("end_date")
+                        if len(batch) == 500 or company == total_companies:
+                            count += writer.write_fundamentals_batch(batch)
+                            batch.clear()
                             emit(stage="write", message=f"{day} 写入 {symbol}", completed=company, total=total_companies)
                     writer.mark_fundamental_quarter_completed(year, quarter, count, filename=filename,
                                                             file_hash="local:" + cache_signature(cached) + mapping)
@@ -233,12 +253,15 @@ def update_fundamentals(data_dir, plan):
                 except Exception:
                     writer.rollback()
                     raise
+                finally:
+                    timings["write"] += time.perf_counter() - started
                 written += count
             except Exception as error:
                 failures.append({"unit": day, "detail": str(error)})
                 print(f"{day} 失败：{error}", flush=True)
-            emit(stage="write", message=f"财务季度 {day} 已处理", completed=index, total=plan["unit_count"], written=written)
-        return {"written": written, "skipped": skipped, "failed_units": failures}
+            emit(stage="write", message=f"财务季度 {day} 已处理", completed=index, total=plan["unit_count"], written=written, current_unit=None, overall_completed=index, overall_total=plan["unit_count"])
+        print(f"财务阶段耗时：下载 {timings['download']:.2f} 秒，解析 {timings['parse']:.2f} 秒，入库 {timings['write']:.2f} 秒", flush=True)
+        return {"written": written, "skipped": skipped, "failed_units": failures, "timings": timings}
     finally:
         writer.close()
 
@@ -252,9 +275,9 @@ def update_pcf(data_dir, plan):
         update_calendar(data_dir, plan)
         plan = build_plan(data_dir, plan["request"])
     with EtfPcfFetcher() as fetcher:
-        for index, unit in enumerate(plan["units"], 1):
+        for index, unit in enumerate(reversed(plan["units"]), 1):
             symbol, day = unit.split("|")
-            emit(stage="download", message=f"获取 {symbol} · {day} 历史清单", completed=index - 1, total=plan["unit_count"])
+            emit(stage="download", message=f"获取 {symbol} · {day} 历史清单", completed=index - 1, total=plan["unit_count"], overall_completed=index - 1, overall_total=plan["unit_count"])
             path = data_dir / "etf_pcf" / symbol / f"{day}.parquet"
             try:
                 reusable = False
@@ -278,7 +301,7 @@ def update_pcf(data_dir, plan):
             except Exception as error:
                 failures.append({"unit": unit, "detail": str(error)})
                 print(f"{unit} 失败：{error}", flush=True)
-            emit(stage="write", message=f"处理 {symbol} · {day}", completed=index, total=plan["unit_count"], written=written)
+            emit(stage="write", message=f"处理 {symbol} · {day}", completed=index, total=plan["unit_count"], written=written, overall_completed=index, overall_total=plan["unit_count"])
     return {"written": written, "skipped": skipped, "failed_units": failures}
 
 
@@ -329,7 +352,7 @@ def main(argv=None):
         action = {"daily": update_daily, "fundamentals": update_fundamentals, "pcf": update_pcf,
                   "calendar": update_calendar}[plan["request"]["dataset"]]
         result = action(data_dir, plan)
-        emit(stage="verify", message="更新结果已保存", result=result)
+        emit(stage="verify", message="数据处理结束，正在核验结果；任务尚未完成", result=result)
         return 1 if result["failed_units"] else 0
 
 

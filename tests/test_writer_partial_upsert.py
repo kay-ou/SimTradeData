@@ -125,3 +125,58 @@ def test_ambiguous_quarters_do_not_write_any_rows(writer, announcements):
         writer.write_fundamentals('601857.SS', frame)
     assert writer.conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (0,)
     assert writer.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (0,)
+
+
+def test_fundamental_batch_preserves_fields_absent_from_each_source(writer):
+    writer.conn.execute("INSERT INTO fundamentals(symbol,date,roe,total_shares) VALUES ('000001.SZ','2026-03-31',10,100),('000002.SZ','2026-03-31',20,200)")
+    frames = {'000001.SZ': pd.DataFrame({'date': ['2026-03-31'], 'roe': [12.]}),
+              '000002.SZ': pd.DataFrame({'date': ['2026-03-31'], 'total_shares': [250.]})}
+    originals = {key: frame.copy(deep=True) for key, frame in frames.items()}
+    assert writer.write_fundamentals_batch(frames) == 2
+    assert writer.conn.execute('SELECT roe,total_shares FROM fundamentals ORDER BY symbol').fetchall() == [(12., 100.), (20., 250.)]
+    assert writer.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (2,)
+    for key in frames:
+        pd.testing.assert_frame_equal(frames[key], originals[key])
+
+
+def test_fundamental_batch_validates_all_companies_before_writing(writer):
+    from simtradedata.validators.data_validator import DataQualityError
+    frames = {'601857.SS': pd.DataFrame({'date': ['2017-06-30'], 'roe': [10.]}),
+              '000001.SZ': pd.DataFrame({'date': ['2017-06-30'] * 2, 'roe': [10., 12.]})}
+    with pytest.raises(DataQualityError, match='Conflicting quarters'):
+        writer.write_fundamentals_batch(frames)
+    assert writer.conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (0,)
+
+
+def test_fundamental_batch_rollback_keeps_existing_values(writer):
+    writer.conn.execute("INSERT INTO fundamentals(symbol,date,roe) VALUES ('601857.SS','2017-06-30',5)")
+    writer.begin()
+    writer.write_fundamentals_batch({'601857.SS': pd.DataFrame({'date': ['2017-06-30'], 'roe': [10.]})})
+    writer.rollback()
+    assert writer.conn.execute('SELECT roe FROM fundamentals').fetchone() == (5.,)
+    assert writer.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (0,)
+
+
+def test_change_index_does_not_index_mutable_timestamp_and_repeated_updates_commit(writer):
+    expression = writer.conn.execute("SELECT expressions FROM duckdb_indexes() WHERE index_name='idx_data_change_log_table_date'").fetchone()[0]
+    assert 'changed_at' not in expression
+    frame = pd.DataFrame({'symbol': ['000016.SZ'] * 15,
+                          'date': pd.date_range('2026-09-01', periods=15).date, 'close': [10.] * 15})
+    for _ in range(5):
+        writer.begin()
+        writer._upsert_symbol_rows('stocks', frame)
+        writer.commit()
+    assert writer.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (15,)
+    assert writer.conn.execute('SELECT COUNT(*) FROM stocks').fetchone() == (15,)
+
+
+def test_legacy_mutable_change_index_is_rebuilt_without_losing_rows(tmp_path):
+    path = tmp_path / 'legacy.duckdb'
+    with DuckDBWriter(str(path)) as old:
+        old.conn.execute("INSERT INTO data_change_log(table_name,symbol,date) VALUES ('stocks','000016.SZ','2026-09-01')")
+        old.conn.execute('DROP INDEX idx_data_change_log_table_date')
+        old.conn.execute('CREATE INDEX idx_data_change_log_table_date ON data_change_log(table_name,changed_at,date)')
+    with DuckDBWriter(str(path)) as updated:
+        expression = updated.conn.execute("SELECT expressions FROM duckdb_indexes() WHERE index_name='idx_data_change_log_table_date'").fetchone()[0]
+        assert 'changed_at' not in expression
+        assert updated.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (1,)

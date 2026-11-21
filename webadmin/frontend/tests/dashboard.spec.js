@@ -23,7 +23,7 @@ test('one smart button fills gaps from cache and verifies the result', async ({ 
   await expect(page).toHaveTitle('SimTradeData · 数据管理');
   await expect(page.getByRole('heading', { name: '更新你的回测数据' })).toBeVisible();
   await expect(page.getByLabel('更新方式')).not.toBeVisible();
-  await expect(page.getByLabel('自动检查结果')).toContainText('已检查本地数据');
+  await expect(page.getByLabel('自动检查结果')).toContainText('需要补齐');
   await expect(page.locator('.automatic-range')).toContainText('2026-11-18 至 2026-11-20');
   await expect(page.getByLabel('开始日期')).toHaveCount(0);
   await page.screenshot({ path: '/tmp/simtrade-ui-simple-desktop.png', fullPage: true });
@@ -119,4 +119,92 @@ test('old running service shows restart hint instead of broken health controls',
   await expect(panel).toContainText('请等待更新任务完成后重启管理台');
   await expect(panel.getByRole('button', {name: '检查数据源'})).toBeDisabled();
   await expect(panel.getByRole('alert')).toHaveCount(0);
+});
+
+test('restart button is disabled while an update is running', async ({ page }) => {
+  await page.route('**/api/jobs', route => route.fulfill({json: {jobs: [{id: 'running-fixture', request: {dataset: 'daily', mode: 'auto', start_date: '2026-11-18', end_date: '2026-11-20'}, status: 'running', stage: 'write', started_at: new Date().toISOString(), completed: 0, total: 1, message: '正在写入', logs: [], before: []}]}}));
+  await page.goto('/');
+  await expect(page.getByRole('button', {name: '重启管理台'})).toBeDisabled();
+});
+
+test('restart launches a new server instance and preserves downloaded rows', async ({ page, request }) => {
+  const previous = await (await request.get('/api/service')).json();
+  await page.goto('/');
+  await expect(page.getByRole('button', {name: '重启管理台'})).toBeEnabled();
+  await page.getByRole('button', {name: '重启管理台'}).click();
+  await expect.poll(async () => {
+    try { return (await (await request.get('/api/service')).json()).instance_id; }
+    catch { return previous.instance_id; }
+  }, {timeout: 30000}).not.toBe(previous.instance_id);
+  await expect(page.getByRole('button', {name: '重启管理台'})).toBeEnabled();
+  await expect(page.getByRole('button', {name: '已同步，无需更新'})).toBeDisabled();
+  await expect(page.locator('.task')).toHaveCount(0);
+  await page.screenshot({path: '/tmp/simtrade-restart-desktop.png', fullPage: true});
+});
+
+test('financial summary explains missing quarters and planned downloads', async ({ page }) => {
+  await page.route('**/api/recommendation?*', async route => {
+    if (!route.request().url().includes('dataset=fundamentals')) return route.continue();
+    await route.fulfill({json: {request: {dataset: 'fundamentals', mode: 'auto', start_date: '2026-03-31', end_date: '2026-09-30', symbols: []}, work_pending: true, cached_files: 2, existing_records: 0, update_summary: {pending_units: 3, reuse_units: 2, download_units: 1}, initialized: true}});
+  });
+  await page.goto('/');
+  await page.getByRole('button', {name: '季度财务', exact: true}).click();
+  const summary = page.getByLabel('自动检查结果');
+  await expect(summary).toContainText('3 个季度待补齐');
+  await expect(summary).toContainText('优先复用 2 个缓存包 · 需要下载 1 个季度包');
+  await expect(page.locator('.automatic-range')).toContainText('仅补其中缺口');
+  await page.screenshot({path: '/tmp/simtrade-update-summary.png', fullPage: true});
+});
+
+test('current quarter reaching 100 percent does not mean the task is complete', async ({ page }) => {
+  const job = {id: 'overall-fixture', request: {dataset: 'fundamentals', mode: 'auto', start_date: '2026-03-31', end_date: '2026-09-30'}, status: 'running', stage: 'write', started_at: new Date().toISOString(), completed: 5500, total: 5500, current_unit: '2026-09-30', overall_completed: 2, overall_total: 3, unit_label: '季度', message: '正在提交当前季度', logs: [], before: []};
+  await page.route('**/api/jobs', route => route.fulfill({json: {jobs: [job]}}));
+  await page.goto('/');
+  await expect(page.locator('.overall-progress')).toContainText('2 / 3 季度');
+  await expect(page.locator('.live-progress')).toContainText('当前季度 2026-09-30');
+  await expect(page.locator('.live-progress')).toContainText('100.0%');
+  await expect(page.locator('.task-status')).toHaveText('运行中');
+  await page.screenshot({path: '/tmp/simtrade-overall-progress.png', fullPage: true});
+  await page.setViewportSize({width: 390, height: 844});
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path: '/tmp/simtrade-overall-progress-mobile.png', fullPage: true});
+  job.stage = 'verify'; job.overall_completed = 3; job.current_unit = null;
+  await expect(page.locator('.overall-progress')).toContainText('任务尚未完成');
+  await expect(page.getByRole('progressbar', {name: '整体处理进度'})).not.toHaveAttribute('value');
+  await expect(page.locator('.live-progress')).toHaveCount(0);
+  await expect(page.locator('.task-status')).toHaveText('运行中');
+});
+
+test('field warnings remain visible without offering repeated daily download', async ({ page }) => {
+  await page.route('**/api/recommendation?*', route => route.fulfill({json: {request: {dataset: 'daily', mode: 'auto', start_date: '2015-01-05', end_date: '2026-11-20', symbols: []}, work_pending: false, existing_records: 100, cached_files: 1, initialized: true, update_summary: {quality_issues: 2}}}));
+  await page.goto('/');
+  await expect(page.getByLabel('自动检查结果')).toContainText('日期已同步；2 条记录需核验');
+  await expect(page.getByRole('button', {name: '已同步，无需更新'})).toBeDisabled();
+  await expect(page.getByText('智能更新不会因此重复下载整包', {exact: false})).toBeVisible();
+});
+
+test('repair button starts a targeted task and reports unresolved records', async ({ page }) => {
+  let job = null;
+  await page.route('**/api/recommendation?*', route => route.fulfill({json: {request: {dataset: 'daily', mode: 'auto', start_date: '2026-11-18', end_date: '2026-11-20', symbols: []}, scope_start: '2026-11-17', scope_end: '2026-11-20', work_pending: true, existing_records: 3, cached_files: 1, initialized: true, update_summary: {quality_issues: 2}}}));
+  await page.route('**/api/plans', route => {
+    expect(route.request().postDataJSON()).toEqual({dataset: 'daily', mode: 'repair', start_date: '2026-11-17', end_date: '2026-11-20', symbols: []});
+    return route.fulfill({json: {plan_id: 'repair-preview', work_pending: true, update_summary: {quality_issues: 2}}});
+  });
+  await page.route('**/api/jobs', route => {
+    if (route.request().method() === 'POST') {
+      expect(route.request().postDataJSON()).toEqual({plan_id: 'repair-preview'});
+      job = {id: 'repair-fixture', request: {dataset: 'daily', mode: 'repair', start_date: '2026-11-18', end_date: '2026-11-20', symbols: []}, status: 'running', stage: 'write', started_at: new Date().toISOString(), completed: 0, total: 1, overall_completed: 0, overall_total: 1, unit_label: '个证券', message: '定向修补异常记录', logs: [], before: []};
+      return route.fulfill({json: job});
+    }
+    return route.fulfill({json: {jobs: job ? [job] : []}});
+  });
+  await page.goto('/');
+  await page.getByRole('button', {name: '修补不完整数据'}).click();
+  await expect(page.locator('.task-heading')).toContainText('定向修补');
+  job = {...job, status: 'failed', stage: 'verify', after: [], result: {written: 1, unresolved: 1, failed_units: [{unit: '000594.SZ', detail: '1 条未修复；源没有对应历史日期'}]}};
+  await expect(page.locator('.comparison')).toContainText('已修复 1 条');
+  await expect(page.locator('.comparison')).toContainText('仍待核验 1 条');
+  await page.locator('.failures summary').click();
+  await expect(page.locator('.failures')).toContainText('源没有对应历史日期');
+  await page.screenshot({path: '/tmp/simtrade-targeted-repair.png', fullPage: true});
 });

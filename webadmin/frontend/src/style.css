@@ -19,3 +19,9 @@
 .source-health-rows details + details { border-top: 1px solid #dce8e7; }
 .source-health-rows p { overflow-wrap: anywhere; }
 @media (max-width: 520px) { .source-health { padding: 14px; } .source-health-rows summary { flex-wrap: wrap; } }
+
+.restart-control { flex-shrink: 0; max-width: 320px; }
+@media (max-width: 520px) { .page-heading { flex-wrap: wrap; gap: 16px; } }
+
+.overall-progress { padding: 16px 0; }
+.overall-progress progress { width: 100%; }

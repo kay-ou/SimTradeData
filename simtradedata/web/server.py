@@ -3,6 +3,9 @@
 import argparse
 import json
 import mimetypes
+import os
+import sys
+import uuid
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,7 +18,8 @@ from simtradedata.web.source_health import SourceHealth
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def handler_for(manager, health=None):
+def handler_for(manager, health=None, restart_enabled=False):
+    instance_id = uuid.uuid4().hex
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -32,7 +36,9 @@ def handler_for(manager, health=None):
         def do_GET(self):
             parsed = urlsplit(self.path)
             try:
-                if parsed.path == "/api/source-health" and health is not None:
+                if parsed.path == "/api/service":
+                    self.respond(200, {"instance_id": instance_id, "restart_supported": restart_enabled})
+                elif parsed.path == "/api/source-health" and health is not None:
                     self.respond(200, health.snapshot())
                 elif parsed.path == "/api/jobs":
                     self.respond(200, {"jobs": manager.list_jobs()})
@@ -58,6 +64,8 @@ def handler_for(manager, health=None):
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
                     self.wfile.write(path.read_bytes())
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Page reload can close an in-flight request.
             except (ValueError, TypeError) as error:
                 self.respond(400, {"error": str(error)})
             except Exception as error:
@@ -80,7 +88,21 @@ def handler_for(manager, health=None):
                 if not 0 < length <= 16384 or self.headers.get_content_type() != "application/json":
                     raise ValueError("请求体应为小于 16KB 的 JSON")
                 body = json.loads(self.rfile.read(length))
-                if self.path == "/api/source-health/check" and health is not None:
+                if self.path == "/api/service/restart" and restart_enabled:
+                    if body != {}:
+                        raise ValueError("重启不接受自定义命令或参数")
+                    with manager.lock:
+                        if manager.active:
+                            raise RuntimeError("请先完成或取消更新任务，再重启管理台")
+                        if manager.restarting:
+                            raise RuntimeError("管理台正在重启，请稍候")
+                        manager.restarting = True
+                        self.server.restart_requested = True
+                    try:
+                        self.respond(202, {"instance_id": instance_id, "status": "restarting"})
+                    finally:
+                        self.server.shutdown()
+                elif self.path == "/api/source-health/check" and health is not None:
                     if body != {}:
                         raise ValueError("数据源检查不接受自定义地址或命令")
                     self.respond(202, health.check())
@@ -95,6 +117,8 @@ def handler_for(manager, health=None):
                     self.respond(200, {"ok": True})
                 else:
                     self.respond(404, {"error": "未知操作"})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             except RuntimeError as error:
                 self.respond(409, {"error": str(error)})
             except (ValueError, TypeError, KeyError) as error:
@@ -111,7 +135,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     manager = JobManager(args.data_dir)
     health = SourceHealth(args.data_dir)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(manager, health))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(manager, health, restart_enabled=True))
+    server.restart_requested = False
     health.start()
     print(f"数据管理：http://127.0.0.1:{args.port} · 数据目录：{manager.data_dir}", flush=True)
     try:
@@ -123,3 +148,5 @@ def main(argv=None):
         if manager.active:
             manager.cancel(manager.active)
         server.server_close()
+    if server.restart_requested:
+        os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])

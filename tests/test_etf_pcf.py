@@ -152,3 +152,26 @@ def test_historical_health_checks_exact_requested_date(monkeypatch, tmp_path):
     monkeypatch.setattr(checks, "latest_due_session", lambda *args: pytest.fail("Historical request cannot use latest session"))
     assert checks.main(["--symbols", "159919.SZ", "--date", "2026-11-20", "--json-output", str(tmp_path / "history.json")]) == 0
     fetcher.fetch_pcf.assert_called_once_with("159919.SZ", "2026-11-20")
+
+
+def test_missing_historical_announcement_does_not_block_latest_request(monkeypatch):
+    from simtradedata.fetchers.etf_pcf_fetcher import PcfNotAvailable
+    fetcher = EtfPcfFetcher()
+    fetcher._cooldown = Mock()
+    fetcher._cooldown.is_in_cooldown.return_value = False
+    fetcher._circuit_breaker = Mock()
+    fetcher._circuit_breaker.is_available.return_value = True
+    fetcher._monitor = Mock()
+    def get(url, **kwargs):
+        if 'ShowReport' in url:
+            old = kwargs['params']['txtEnd'].startswith('2015')
+            return Mock(json=lambda: [] if old else {'urls': ['pcf_159919_20261120']})
+        return Mock(content=sample('159919.SZ'))
+    monkeypatch.setattr(fetcher, '_get', get)
+    with fetcher:
+        with pytest.raises(PcfNotAvailable, match='未找到'):
+            fetcher.fetch_pcf('159919.SZ', '2015-11-20')
+        assert len(fetcher.fetch_pcf('159919.SZ', '2026-11-20')) == 301
+    fetcher._cooldown.record_failure.assert_not_called()
+    fetcher._circuit_breaker.record_failure.assert_not_called()
+    assert fetcher._circuit_breaker.record_success.call_count == 2

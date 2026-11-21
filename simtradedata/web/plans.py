@@ -1,16 +1,15 @@
 """Validate update intents and build reviewable, deterministic update plans."""
 
 import re
-import zipfile
 from datetime import date
 from pathlib import Path
 
 from simtradedata.web.coverage import inspect_coverage, quarter_dates
 from simtradedata.web.cache_state import file_signature, financial_signature
-from simtradedata.web.completeness import calendar_covers, daily_pending
+from simtradedata.web.completeness import calendar_covers, daily_database_pending
 import duckdb
 
-MODES = {"auto", "incremental", "refresh", "reparse"}
+MODES = {"auto", "incremental", "refresh", "reparse", "repair"}
 DATASETS = {"daily", "fundamentals", "pcf", "calendar"}
 
 
@@ -20,6 +19,8 @@ def validate_request(body):
     dataset, mode = body.get("dataset"), body.get("mode")
     if dataset not in DATASETS or mode not in MODES:
         raise ValueError("请选择有效的数据类别和更新方式")
+    if mode == "repair" and dataset != "daily":
+        raise ValueError("定向修补目前仅支持日线")
     start, end = body.get("start_date", ""), body.get("end_date", "")
     try:
         first, last = date.fromisoformat(start), date.fromisoformat(end)
@@ -67,10 +68,14 @@ def build_plan(data_dir: Path, body):
             raise ValueError("尚无日线 ZIP 缓存，请先下载日线数据")
         note = "使用通达信批量历史包，仅导入选定日期和证券。增量只插入缺失记录；刷新和重新解析更新范围内已有值。"
         if request["mode"] == "auto":
-            try:
-                done = not daily_pending(data_dir, request, coverage)
-            except (ValueError, zipfile.BadZipFile):
-                done = False
+            done = not daily_database_pending(data_dir, request, coverage)
+        if request["mode"] == "repair":
+            from simtradedata.web.daily_repair import daily_issue_rows
+            issues = daily_issue_rows(data_dir, request)
+            units = sorted(issues['symbol'].unique()) if not issues.empty else []
+            item['invalid_records'] = len(issues)
+            done = not units
+            note = "仅修补已有异常记录；先用本地通达信包，再查询未复权备用源，无法确认的保留并报告。"
     elif dataset == "fundamentals":
         units = quarter_dates(request["start_date"], request["end_date"])
         if not units:
@@ -116,7 +121,11 @@ def build_plan(data_dir: Path, body):
     if request["mode"] == "auto":
         note = "先检查本地缓存与已有记录，只获取缺少的数据；已有财务包直接用于补齐字段。"
     local_files = sum((data_dir / "mootdx_financial" / f"gpcw{day.replace('-', '')}.zip").exists() for day in units) if dataset == "fundamentals" else int((cache / "hsjday.zip").exists()) if dataset == "daily" else len(item["archives"])
-    return {"request": request, "units": units, "unit_count": len(units), "existing_records": item["records"],
+    reuse_units = local_files if dataset == "fundamentals" and request["mode"] in {"auto", "reparse"} else 0
+    update_summary = {"quality_issues": item.get("invalid_records", 0), "pending_units": len(units) if dataset != "pcf" or not needs_calendar else None,
+                      "reuse_units": reuse_units, "download_units": None if request["mode"] == "repair" else len(units) - reuse_units,
+                      "unit_label": "个证券" if request["mode"] == "repair" else "季度" if dataset == "fundamentals" else "份清单" if dataset == "pcf" else "历史包"}
+    return {"update_summary": update_summary, "request": request, "units": units, "unit_count": len(units), "existing_records": item["records"],
             "work_pending": not done, "status": "up_to_date" if done else "ready",
             "cached_files": local_files, "needs_calendar": dataset == "pcf" and needs_calendar,
             "missing_dates": len(item["missing_dates"]), "note": note,

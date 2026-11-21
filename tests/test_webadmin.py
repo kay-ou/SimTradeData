@@ -174,6 +174,8 @@ def test_financial_reparse_populates_new_fields_and_commits_quarter(tmp_path, mo
     plan = build_plan(tmp_path, request(dataset="fundamentals", mode="reparse", start_date="2026-07-01"))
     result = update_fundamentals(tmp_path, plan)
     assert result["failed_units"] == [] and result["written"] == 1
+    assert result["timings"]["download"] == 0
+    assert result["timings"]["parse"] > 0 and result["timings"]["write"] > 0
     with duckdb.connect(str(tmp_path / "cn.duckdb"), read_only=True) as conn:
         assert conn.execute("SELECT total_assets, diluted_eps FROM fundamentals WHERE symbol='600519.SS'").fetchone() == (100, 1.25)
         assert conn.execute("SELECT year, quarter, stock_count FROM fundamentals_progress").fetchone() == (2026, 3, 1)
@@ -310,7 +312,7 @@ def test_recommendation_recovers_from_damaged_daily_cache(tmp_path, monkeypatch,
     cache.write_bytes(b"invalid zip" if damage == "invalid" else valid[:40])
     result = recommend(tmp_path, "daily")
     assert result["work_pending"] is True
-    assert result["request"]["start_date"] == "2026-11-17"
+    assert result["request"]["start_date"] == "2026-11-18"
     monkeypatch.setattr(download_tdx_day, "get_remote_file_info", lambda *args: {})
     def download(url, destination, **kwargs):
         destination.write_bytes(valid)
@@ -353,3 +355,109 @@ def test_recommendation_validates_symbols_before_access(tmp_path):
     with pytest.raises(ValueError):
         recommend(tmp_path, 'pcf', ['../../file'])
     assert not list(tmp_path.iterdir())
+
+
+def test_financial_failure_after_first_batch_rolls_back_whole_quarter(tmp_path, monkeypatch):
+    import duckdb
+    from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
+    from simtradedata.web.operations import update_fundamentals
+    cache = tmp_path / 'mootdx_financial'
+    cache.mkdir()
+    (cache / 'gpcw20260930.zip').write_bytes(b'fixture')
+    frame = pd.DataFrame({'code': [f'{i:06d}' for i in range(1, 502)],
+                          'end_date': pd.to_datetime(['2026-09-30'] * 501), 'total_assets': [100.] * 501})
+    monkeypatch.setattr(MootdxAffairFetcher, 'parse_local', lambda *a: frame)
+    monkeypatch.setattr(MootdxAffairFetcher, '_convert_to_ptrade_format', lambda self, raw: raw)
+    original = DuckDBWriter.write_fundamentals_batch
+    calls = []
+    def write(self, frames):
+        calls.append(len(frames))
+        if len(calls) == 2:
+            assert self.conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (500,)
+            raise RuntimeError('second batch failed')
+        return original(self, frames)
+    monkeypatch.setattr(DuckDBWriter, 'write_fundamentals_batch', write)
+    plan = build_plan(tmp_path, request(dataset='fundamentals', mode='reparse', start_date='2026-07-01'))
+    result = update_fundamentals(tmp_path, plan)
+    assert calls == [500, 1]
+    assert result['written'] == 0 and len(result['failed_units']) == 1
+    with duckdb.connect(str(tmp_path / 'cn.duckdb'), read_only=True) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (0,)
+        assert conn.execute('SELECT COUNT(*) FROM fundamentals_progress').fetchone() == (0,)
+        assert conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (0,)
+
+
+def test_daily_recommendation_scans_source_only_once(tmp_path, monkeypatch):
+    from tests.ui_server import seed
+    from simtradedata.web import recommendations
+    seed(tmp_path)
+    calls = []
+    def pending(directory, request, coverage, gap):
+        calls.append(True)
+        gap.update(start_date='2026-11-18', end_date='2026-11-20')
+        return True
+    monkeypatch.setattr(recommendations, 'daily_database_pending', pending)
+    monkeypatch.setattr(recommendations, 'build_plan', lambda *a: pytest.fail('must not repeat ZIP check'))
+    result = recommendations.recommend(tmp_path, 'daily')
+    assert calls == [True]
+    assert result['existing_records'] == 1
+    assert result['work_pending']
+
+
+def test_default_daily_checks_never_open_zip(tmp_path, monkeypatch):
+    from tests.ui_server import seed
+    from simtradedata.web import completeness
+    from simtradedata.web.recommendations import recommend
+    seed(tmp_path)
+    monkeypatch.setattr(completeness.zipfile, 'ZipFile', lambda *a, **k: pytest.fail('DB check must not open ZIP'))
+    assert recommend(tmp_path, 'daily')['work_pending']
+    assert build_plan(tmp_path, request(mode='auto'))['work_pending']
+
+
+def test_financial_summary_distinguishes_cache_reuse_and_download(tmp_path):
+    folder = tmp_path / 'mootdx_financial'
+    folder.mkdir()
+    for day in ['20260331', '20260630']:
+        (folder / f'gpcw{day}.zip').write_bytes(b'fixture')
+    body = request(dataset='fundamentals', mode='auto', start_date='2026-01-01', end_date='2026-09-30')
+    summary = build_plan(tmp_path, body)['update_summary']
+    assert summary == {'quality_issues': 0, 'pending_units': 3, 'reuse_units': 2, 'download_units': 1, 'unit_label': '季度'}
+    assert build_plan(tmp_path, {**body, 'mode': 'refresh'})['update_summary']['download_units'] == 3
+
+
+def test_job_retains_overall_progress_separately_from_current_company_progress(tmp_path):
+    from simtradedata.web.operations import EVENT_PREFIX
+    manager = JobManager(tmp_path)
+    job = {'status': 'running', 'stage': 'write', 'current_unit': '2019-12-31', 'downloaded_bytes': 100, 'logs': [], 'request': request(), 'after': None}
+    event = {'stage': 'write', 'overall_completed': 18, 'overall_total': 47,
+             'current_unit': '2020-03-31', 'completed': 500, 'total': 5500}
+    process = Mock()
+    process.stdout = [EVENT_PREFIX + json.dumps(event)]
+    process.wait.return_value = 0
+    temporary = tmp_path / 'request.json'
+    temporary.write_text('{}')
+    manager._watch(job, process, temporary)
+    assert job['overall_completed'] == 18 and job['overall_total'] == 47
+    assert job['completed'] == 500 and job['total'] == 5500
+    assert job['current_unit'] == '2020-03-31'
+    assert 'downloaded_bytes' not in job
+
+
+def test_quality_warning_does_not_repeat_completed_daily_download(tmp_path):
+    import duckdb
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    from simtradedata.web.recommendations import recommend
+    seed(tmp_path)
+    update_daily(tmp_path, build_plan(tmp_path, request(mode='auto')))
+    with duckdb.connect(str(tmp_path / 'cn.duckdb')) as conn:
+        conn.execute("UPDATE stocks SET volume=NULL,money=NULL WHERE date='2026-11-19'")
+    plan = build_plan(tmp_path, request(mode='auto'))
+    assert not plan['work_pending']
+    assert plan['update_summary']['quality_issues'] == 1
+    recommended = recommend(tmp_path, 'daily')
+    assert not recommended['work_pending']
+    assert recommended['update_summary']['quality_issues'] == 1
+    manager = JobManager(tmp_path)
+    assert manager.start(manager.preview(request(mode='auto'))['plan_id'])['status'] == 'up_to_date'
+    assert not manager.list_jobs()

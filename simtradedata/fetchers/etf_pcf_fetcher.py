@@ -15,6 +15,10 @@ INFO_FIELDS = [
 ]
 
 
+class PcfNotAvailable(ValueError):
+    """A valid source response has no announcement for this ETF/date."""
+
+
 def parse_pcf(content: bytes, symbol: str) -> pd.DataFrame:
     code, market = symbol.split(".")
     szse = market == "SZ"
@@ -126,7 +130,11 @@ class EtfPcfFetcher(BaseFetcher):
             raise ValueError("Cannot request future PCF")
         self.login()
         result = self._make_request(self._download, symbol, requested, today)
-        return result if result is not None else pd.DataFrame()
+        if result is None:
+            raise ConnectionError("PCF 数据源暂处于冷却或熔断状态，请稍后重试")
+        if result.empty:
+            raise PcfNotAvailable(f"{symbol}: 未找到 {requested or today} 对应的 PCF 公告，不能用其他日期替代")
+        return result
 
     def _download(self, symbol, requested, today):
         code, market = symbol.split(".")
@@ -140,8 +148,10 @@ class EtfPcfFetcher(BaseFetcher):
             ).json()
             dates = [value for value in re.findall(rf"pcf_{code}_(\d{{8}})", str(index))
                      if value <= end.strftime("%Y%m%d")]
-            if not dates:
-                raise ValueError("No PCF announcement for requested ETF/date")
+            if not dates or (requested is not None and requested.strftime("%Y%m%d") not in dates):
+                # Missing history is not a transport failure. The public method
+                # raises after the successful request is recorded by resilience.
+                return pd.DataFrame()
             content = self._get(f"https://reportdocs.static.szse.cn/files/text/ETFDown/pcf_{code}_{max(dates)}.xml").content
         else:
             content = self._get(

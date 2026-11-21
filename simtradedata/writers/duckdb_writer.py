@@ -506,9 +506,12 @@ class DuckDBWriter:
             )
         """)
 
+        change_index = self.conn.execute("SELECT expressions FROM duckdb_indexes() WHERE index_name='idx_data_change_log_table_date'").fetchone()
+        if change_index and "changed_at" in change_index[0]:
+            self.conn.execute("DROP INDEX idx_data_change_log_table_date")
         self.conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_data_change_log_table_date
-            ON data_change_log (table_name, changed_at, date)
+            ON data_change_log (table_name, date)
         """)
 
         self.conn.execute("""
@@ -826,8 +829,9 @@ class DuckDBWriter:
         self.conn.register("_data_change_rows", changes)
         try:
             self.conn.execute("""
-                INSERT OR REPLACE INTO data_change_log (table_name, symbol, date, changed_at)
+                INSERT INTO data_change_log (table_name, symbol, date, changed_at)
                 SELECT table_name, symbol, date, CURRENT_TIMESTAMP FROM _data_change_rows
+                ON CONFLICT (table_name, symbol, date) DO UPDATE SET changed_at = EXCLUDED.changed_at
             """)
         finally:
             self.conn.unregister("_data_change_rows")
@@ -841,8 +845,9 @@ class DuckDBWriter:
         self.conn.register("_metadata_change_rows", changes)
         try:
             self.conn.execute("""
-                INSERT OR REPLACE INTO data_change_log (table_name, symbol, date, changed_at)
+                INSERT INTO data_change_log (table_name, symbol, date, changed_at)
                 SELECT table_name, symbol, date, CURRENT_TIMESTAMP FROM _metadata_change_rows
+                ON CONFLICT (table_name, symbol, date) DO UPDATE SET changed_at = EXCLUDED.changed_at
             """)
         finally:
             self.conn.unregister("_metadata_change_rows")
@@ -979,7 +984,27 @@ class DuckDBWriter:
         """Write quarterly fundamentals with upsert"""
         if df.empty:
             return 0
+        df = self._prepare_fundamentals(symbol, df)
+        self._upsert_symbol_rows("fundamentals", df)
+        logger.debug(f"Wrote {len(df)} fundamental rows for {symbol}")
+        return len(df)
 
+    def write_fundamentals_batch(self, frames: dict) -> int:
+        """Validate each company, then upsert together by supplied column set."""
+        batches = {}
+        for symbol, frame in frames.items():
+            if frame.empty:
+                continue
+            prepared = self._prepare_fundamentals(symbol, frame)
+            batches.setdefault(tuple(prepared.columns), []).append(prepared)
+        written = 0
+        for frames in batches.values():
+            batch = pd.concat(frames, ignore_index=True)
+            self._upsert_symbol_rows("fundamentals", batch)
+            written += len(batch)
+        return written
+
+    def _prepare_fundamentals(self, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df["symbol"] = symbol
 
@@ -1003,8 +1028,9 @@ class DuckDBWriter:
         available = [c for c in columns if c in df.columns]
         df = df[available]
 
-        df = df.drop_duplicates()
-        if df["date"].duplicated().any():
+        if len(df) > 1:
+            df = df.drop_duplicates()
+        if len(df) > 1 and df["date"].duplicated().any():
             duplicate_rows = df[df["date"].duplicated(keep=False)]
             if "publ_date" not in df.columns or duplicate_rows["publ_date"].isna().any():
                 raise DataQualityError(f"{symbol}: Conflicting quarters without announcement dates")
@@ -1012,11 +1038,7 @@ class DuckDBWriter:
                 raise DataQualityError(f"{symbol}: Conflicting quarters with the same announcement date")
             df = df.sort_values("publ_date").drop_duplicates(subset=["date"], keep="last")
         self._validate_or_warn(df, "fundamental", symbol)
-
-        self._upsert_symbol_rows("fundamentals", df)
-
-        logger.debug(f"Wrote {len(df)} fundamental rows for {symbol}")
-        return len(df)
+        return df
 
     def write_exrights(self, symbol: str, df: pd.DataFrame) -> int:
         """Write exrights data with upsert"""

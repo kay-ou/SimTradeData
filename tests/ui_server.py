@@ -1,5 +1,7 @@
 """Isolated browser-test server with a temporary database and local ZIP."""
 
+import os
+from contextlib import nullcontext
 import struct
 import tempfile
 import zipfile
@@ -40,8 +42,11 @@ def seed(directory):
 
 
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="simtrade-ui-") as directory:
-        seed(directory)
+    existing = os.environ.get("SIMTRADE_UI_FIXTURE_DIR")
+    with nullcontext(existing) if existing else tempfile.TemporaryDirectory(prefix="simtrade-ui-") as directory:
+        if not existing:
+            seed(directory)
+            os.environ["SIMTRADE_UI_FIXTURE_DIR"] = directory
         from simtradedata.web import source_health
         def healthy(_):
             return {"freshness": "current", "latest": "2026-11-20", "detail": "隔离测试样本有效"}

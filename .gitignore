@@ -218,3 +218,4 @@ AGENTS.md
 research/
 output/
 webadmin/frontend/node_modules
+/simtradedata/web/static/

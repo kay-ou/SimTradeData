@@ -154,6 +154,11 @@ Historical transactions and curves retain vendor fields; they do not certify
 Level-2 equivalence or complete history. See [TDX data access](TDX_DATA_ACCESS.md).
 Reports are saved as the `mootdx-interfaces` artifact, separately from daily bars.
 
+The independent `etf-pcf` job checks official SSE/SZSE PCF for `510300.SS`
+and `159919.SZ`, validates actual trading dates against the exchange calendar,
+and retains dated Parquet samples and its report for 30 days. This is sample
+archival, not a complete historical warehouse. See [PCF historical coverage](ETF_PCF_DATA.md).
+
 ```bash
 uv run --frozen python -m scripts.check_mootdx_interfaces
 uv run --frozen python -m scripts.check_mootdx_interfaces --interfaces xdxr fundamentals --timeout 90

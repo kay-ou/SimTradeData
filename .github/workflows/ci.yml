@@ -13,6 +13,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  webadmin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webadmin/frontend/package-lock.json
+      - run: uv sync --frozen --dev
+      - run: npm ci --prefix webadmin/frontend
+      - run: npm run ui:build
+      - run: npx --prefix webadmin/frontend playwright install --with-deps chromium
+      - run: npm run ui:test
+        env:
+          UI_TEST_ARTIFACTS_DIR: /tmp/simtrade-ui-test-results
+      - name: Save UI test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webadmin-tests
+          path: |
+            /tmp/simtrade-ui-test-results/
+            /tmp/simtrade-ui-*.png
+          retention-days: 14
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

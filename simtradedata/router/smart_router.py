@@ -276,6 +276,41 @@ class SmartRouter:
 
         return self._try_fetch("realtime_quotes", fetch_from, market="cn")
 
+    def get_etf_pcf(self, symbol, date=None):
+        """Official PCF with actual trading date and raw cash/component fields."""
+        return self._try_fetch("etf_pcf", lambda fetcher, _: fetcher.fetch_pcf(symbol, date), symbol=symbol)
+
+    def get_etf_info(self, etf_code, date=None):
+        """Confirmed PTrade metadata subset; dates are available in get_etf_pcf."""
+        from simtradedata.fetchers.etf_pcf_fetcher import INFO_FIELDS
+
+        symbols = [etf_code] if isinstance(etf_code, str) else etf_code
+        result = {}
+        for symbol in symbols:
+            pcf = self.get_etf_pcf(symbol, date)
+            if not pcf.empty:
+                row = pcf.iloc[0]
+                result[symbol] = {field: row[field] for field in INFO_FIELDS if field in pcf.columns}
+        return result
+
+    def get_etf_stock_info(self, etf_code, security, date=None):
+        """Confirmed basket subset; preserve distinct creation/redemption cash in PCF."""
+        symbols = [security] if isinstance(security, str) else security
+        pcf = self.get_etf_pcf(etf_code, date)
+        result = {}
+        if pcf.empty:
+            return result
+        for row in pcf[pcf["symbol"].isin(symbols)].to_dict("records"):
+            item = {"code_num": row["code_num"]}
+            if row["substitution_flag"] in {"0", "1", "2"}:
+                item["cash_replace_flag"] = row["substitution_flag"]
+            if pd.notna(row.get("creation_premium_ratio")):
+                item["replace_ratio"] = row["creation_premium_ratio"]
+            if pd.notna(row.get("creation_cash")) and row["creation_cash"] == row.get("redemption_cash"):
+                item["replace_balance"] = row["creation_cash"]
+            result[row["symbol"]] = item
+        return result
+
     def get_snapshot(self, security):
         """Confirmed PTrade Level-1 subset; unavailable fields are omitted."""
         from simtradedata.fetchers.tdx_snapshot import snapshot_from_quotes

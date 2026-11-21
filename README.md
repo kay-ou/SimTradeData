@@ -32,6 +32,12 @@ English | [中文](README_zh.md) | [Deutsch](README_de.md)
 
 ## Key Features
 
+### Local Data Management UI
+
+View historical coverage, preview date-scoped updates, and run daily, quarterly-financial,
+and historical ETF PCF updates with buttons. Includes background progress, cancellation,
+logs, and before/after checks. See the [web data management guide](docs/WEB_DATA_ADMIN.md).
+
 ### Efficient Storage Architecture
 - **DuckDB Intermediate Storage**: High-performance columnar database with SQL queries and incremental updates
 - **Parquet Export Format**: Highly compressed, cross-platform compatible, ideal for large-scale data analysis
@@ -40,7 +46,7 @@ English | [中文](README_zh.md) | [Deutsch](README_de.md)
 ### Comprehensive Data Coverage
 - **Market Data**: OHLCV daily bars with limit-up/down prices and previous close
 - **Valuation Metrics**: PE/PB/PS/PCF/Turnover Rate/Total Shares/Float Shares
-- **Financial Data**: 23 quarterly financial indicators + automatic TTM calculation
+- **Financial Data**: 223 mapped public financial fields + existing TTM calculations; see [field coverage](docs/PTRADE_FINANCIAL_COVERAGE.md)
 - **Corporate Actions**: Dividends, bonus shares, rights offerings (with forward adjustment factors)
 - **Metadata**: Stock info, trading calendar, index constituents, ST/suspension status
 - **US Stock Support**: 6,000+ US common stocks, S&P 500 / NASDAQ-100 index constituents
@@ -367,7 +373,7 @@ with SmartRouter() as router:
 | turnover_rate | Turnover rate |
 
 ### fundamentals/ - Financial Data (Quarterly)
-Contains 23 financial indicators and their TTM versions. See [PTRADE_PARQUET_FORMAT.md](docs/PTRADE_PARQUET_FORMAT.md) for details.
+Contains mapped quarterly fields and existing TTM indicators. Field support and table-semantic boundaries are documented in [PTRADE_FINANCIAL_COVERAGE.md](docs/PTRADE_FINANCIAL_COVERAGE.md).
 
 ## Configuration
 
@@ -413,7 +419,7 @@ BATCH_SIZE = 20
 ### Incremental Update Mechanism
 
 - **Market Data**: Checks for new trading days; skips in seconds when no new data
-- **Financial Data**: Incremental checks based on remote file hash; only downloads changed quarters
+- **Financial Data**: Skip completed older quarters and refresh the selected range's last four quarters; remote hashes are not trusted for change detection
 - **Index Constituents**: Tracks downloaded months; only downloads new months
 - **Interrupt Recovery**: Financial data progress and data are committed in the same transaction; resumes after interruption
 

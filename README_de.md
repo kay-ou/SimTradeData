@@ -40,7 +40,7 @@
 ### Umfassende Datenabdeckung
 - **Marktdaten**: OHLCV-Tagesbalken mit Limit-Up/Down-Preisen und Vortagesschluss
 - **Bewertungskennzahlen**: KGV/KBV/KUV/KCV/Umschlagshäufigkeit/Gesamtaktien/Streubesitz
-- **Finanzdaten**: 23 vierteljährliche Finanzkennzahlen + automatische TTM-Berechnung
+- **Finanzdaten**: 223 zugeordnete öffentliche Finanzfelder + bestehende TTM-Berechnungen; siehe [Feldabdeckung](docs/PTRADE_FINANCIAL_COVERAGE.md)
 - **Kapitalmaßnahmen**: Dividenden, Bonusaktien, Bezugsrechte (mit Vorwärts-Anpassungsfaktoren)
 - **Metadaten**: Aktieninfo, Handelskalender, Indexbestandteile, ST/Aussetzungsstatus
 - **US-Aktien**: 6.000+ US-Stammaktien, S&P 500 / NASDAQ-100 Indexbestandteile
@@ -229,7 +229,7 @@ rsync -a data/export/us/ /path/to/SimTradeLab/data/us/
 | turnover_rate | Umschlagshäufigkeit |
 
 ### fundamentals/ - Finanzdaten (Vierteljährlich)
-Enthält 23 Finanzkennzahlen und deren TTM-Versionen. Details siehe [PTRADE_PARQUET_FORMAT.md](docs/PTRADE_PARQUET_FORMAT.md).
+Enthält zugeordnete Quartalsfelder und bestehende TTM-Kennzahlen. Feldabdeckung und semantische Grenzen: [PTRADE_FINANCIAL_COVERAGE.md](docs/PTRADE_FINANCIAL_COVERAGE.md).
 
 ## Datenquellen-Vergleich
 

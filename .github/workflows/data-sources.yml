@@ -14,6 +14,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  etf-pcf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: uv sync --frozen --dev
+      - name: Probe and archive official ETF PCF samples
+        run: uv run --frozen python -m scripts.check_etf_pcf --archive-dir reports/etf-pcf --json-output reports/etf-pcf.json
+      - name: Save PCF report and dated samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etf-pcf
+          path: |
+            reports/etf-pcf.json
+            reports/etf-pcf/
+          retention-days: 30
   mootdx-interfaces:
     runs-on: ubuntu-latest
     timeout-minutes: 15

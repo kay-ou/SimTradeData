@@ -2,6 +2,7 @@
 
 # Dotted import paths for lazy instantiation.
 FETCHER_REGISTRY = {
+    "etf_pcf": "simtradedata.fetchers.etf_pcf_fetcher.EtfPcfFetcher",
     "mootdx": "simtradedata.fetchers.mootdx_unified_fetcher.MootdxUnifiedFetcher",
     "eastmoney": "simtradedata.fetchers.eastmoney_fetcher.EastMoneyFetcher",
     "baostock": "simtradedata.fetchers.unified_fetcher.UnifiedDataFetcher",
@@ -10,6 +11,7 @@ FETCHER_REGISTRY = {
 
 # data_type -> market -> [source priority list]
 DEFAULT_ROUTE_TABLE = {
+    "etf_pcf": {"cn": ["etf_pcf"]},
     "daily_bars": {
         "cn": ["mootdx", "eastmoney", "baostock"],
         "us": ["yfinance"],

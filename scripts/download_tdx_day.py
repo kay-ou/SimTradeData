@@ -79,7 +79,7 @@ def get_remote_file_info(url: str) -> dict:
         return {"size": None, "last_modified": None}
 
 
-def download_file(url: str, dest_path: Path, show_progress: bool = True) -> bool:
+def download_file(url: str, dest_path: Path, show_progress: bool = True, progress_callback=None) -> bool:
     """
     Download file with progress bar.
 
@@ -98,6 +98,9 @@ def download_file(url: str, dest_path: Path, show_progress: bool = True) -> bool
         with urlopen(req, timeout=60) as response:
             total_size = response.headers.get("Content-Length")
             total_size = int(total_size) if total_size else None
+            downloaded = 0
+            if progress_callback:
+                progress_callback(0, total_size)
 
             # Create temp file first, then move
             temp_path = dest_path.with_suffix(".tmp")
@@ -116,6 +119,9 @@ def download_file(url: str, dest_path: Path, show_progress: bool = True) -> bool
                             if not chunk:
                                 break
                             f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(downloaded, total_size)
                             pbar.update(len(chunk))
                 else:
                     while True:
@@ -123,6 +129,9 @@ def download_file(url: str, dest_path: Path, show_progress: bool = True) -> bool
                         if not chunk:
                             break
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total_size)
 
             # Verify download size matches Content-Length
             downloaded_size = temp_path.stat().st_size

@@ -28,3 +28,16 @@ def test_download_file_size_mismatch_reports_and_cleans_temp(tmp_path, monkeypat
     ) is False
     assert not dest_path.exists()
     assert not dest_path.with_suffix(".tmp").exists()
+
+
+def test_download_callback_reports_actual_transferred_bytes(tmp_path, monkeypatch):
+    response = FakeResponse()
+    response.headers = {"Content-Length": "5"}
+    response._chunks = [b"abc", b"de", b""]
+    monkeypatch.setattr(download_tdx_day, "urlopen", lambda *args, **kwargs: response)
+    events = []
+    target = tmp_path / "hsjday.zip"
+    assert download_tdx_day.download_file("https://example.test/hsjday.zip", target, False,
+                                         progress_callback=lambda done, total: events.append((done, total)))
+    assert target.read_bytes() == b"abcde"
+    assert events == [(0, 5), (3, 5), (5, 5)]

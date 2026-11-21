@@ -205,6 +205,7 @@ __marimo__/
 data/
 *.json
 !package.json
+!webadmin/frontend/package-lock.json
 reports/
 CLAUDE*.md
 GEMINI.md
@@ -216,3 +217,4 @@ AGENTS.md
 !docs/sponsor/*.png
 research/
 output/
+webadmin/frontend/node_modules

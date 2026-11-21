@@ -10,11 +10,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from simtradedata.web.jobs import JobManager
 from simtradedata.web.plans import validate_request
+from simtradedata.web.source_health import SourceHealth
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def handler_for(manager):
+def handler_for(manager, health=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -31,7 +32,9 @@ def handler_for(manager):
         def do_GET(self):
             parsed = urlsplit(self.path)
             try:
-                if parsed.path == "/api/jobs":
+                if parsed.path == "/api/source-health" and health is not None:
+                    self.respond(200, health.snapshot())
+                elif parsed.path == "/api/jobs":
                     self.respond(200, {"jobs": manager.list_jobs()})
                 elif parsed.path == "/api/recommendation":
                     args = parse_qs(parsed.query)
@@ -77,7 +80,11 @@ def handler_for(manager):
                 if not 0 < length <= 16384 or self.headers.get_content_type() != "application/json":
                     raise ValueError("请求体应为小于 16KB 的 JSON")
                 body = json.loads(self.rfile.read(length))
-                if self.path == "/api/plans":
+                if self.path == "/api/source-health/check" and health is not None:
+                    if body != {}:
+                        raise ValueError("数据源检查不接受自定义地址或命令")
+                    self.respond(202, health.check())
+                elif self.path == "/api/plans":
                     self.respond(200, manager.preview(body))
                 elif self.path == "/api/jobs":
                     if not isinstance(body, dict) or set(body) != {"plan_id"} or not isinstance(body["plan_id"], str):
@@ -103,13 +110,16 @@ def main(argv=None):
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args(argv)
     manager = JobManager(args.data_dir)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(manager))
+    health = SourceHealth(args.data_dir)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(manager, health))
+    health.start()
     print(f"数据管理：http://127.0.0.1:{args.port} · 数据目录：{manager.data_dir}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        health.stop()
         if manager.active:
             manager.cancel(manager.active)
         server.server_close()

@@ -92,3 +92,31 @@ test('manual date range is available only in advanced options', async ({ page })
   await expect(page.getByLabel('开始日期')).toHaveCount(0);
   await expect(page.locator('.automatic-range')).toContainText('未检测到待补齐日期');
 });
+
+test('source health button checks samples and shows only latest status', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  const panel = page.getByLabel('数据源健康度');
+  await expect(panel.locator('details')).toHaveCount(3);
+  await expect(panel).toContainText('正常');
+  await panel.getByRole('button', { name: '检查数据源', exact: true }).click();
+  await expect(panel.getByRole('button', { name: '检查数据源', exact: true })).toBeEnabled();
+  await panel.locator('summary').first().click();
+  await expect(panel).toContainText('检查时间');
+  await expect(panel).toContainText('隔离测试样本有效');
+  await page.screenshot({path: '/tmp/simtrade-source-health-desktop.png', fullPage: true});
+  await page.setViewportSize({width: 390, height: 844});
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path: '/tmp/simtrade-source-health-mobile.png', fullPage: true});
+  expect(errors).toEqual([]);
+});
+
+test('old running service shows restart hint instead of broken health controls', async ({ page }) => {
+  await page.route('**/api/source-health', route => route.fulfill({status: 404, json: {error: 'old service'}}));
+  await page.goto('/');
+  const panel = page.getByLabel('数据源健康度');
+  await expect(panel).toContainText('请等待更新任务完成后重启管理台');
+  await expect(panel.getByRole('button', {name: '检查数据源'})).toBeDisabled();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+});

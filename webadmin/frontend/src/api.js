@@ -6,7 +6,11 @@ export async function api(path, body, signal) {
     signal,
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || '请求失败');
+  if (!response.ok) {
+    const error = new Error(data.error || '请求失败');
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 

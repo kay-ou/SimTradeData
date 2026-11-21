@@ -3,6 +3,7 @@ import { api } from './api';
 import Coverage from './Coverage';
 import UpdateForm from './UpdateForm';
 import Tasks from './Tasks';
+import SourceHealth from './SourceHealth';
 
 const iso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const today = new Date();
@@ -131,6 +132,7 @@ export default function App() {
     <header><div className="header-inner"><a className="brand" href="/">SimTradeData<span>数据管理</span></a></div></header>
     <main><div className="page-heading"><div><h1>更新你的回测数据</h1><p>选择数据，一键补齐自动检测的缺口。已有有效数据自动跳过。</p></div></div>
       <UpdateForm autoRange={autoRange} onAutoRange={selectAutoRange} recommendation={recommendation} form={form} setForm={setForm} preview={preview} onDownload={start} pending={pending} active={Boolean(active)} error={error} onCoverage={viewCoverage} />
+      <SourceHealth />
       <Tasks jobs={jobs} onCancel={cancel} onRetry={retry} />
       <details className="coverage-details"><summary>本地数据详情 · 日期缺口与字段检查</summary><span className="range-label">{range.start_date} — {range.end_date}</span><Coverage data={coverage} loading={loading} error={coverageError} onRefresh={() => setRefresh(value => value + 1)} onSyncCalendar={syncCalendar} /></details>
       <footer>仅连接本机数据目录。最新快照不计入历史覆盖；未发布或不可获取的数据不会被填造。</footer>

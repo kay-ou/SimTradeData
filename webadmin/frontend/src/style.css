@@ -11,3 +11,11 @@
 .automatic-range { padding: 16px 0; }
 .automatic-range p { margin: 8px 0; }
 .advanced-options input[type="checkbox"] { width: auto; margin-right: 8px; }
+
+.source-health { margin: 24px 0; padding: 20px; border: 1px solid #dce8e7; border-radius: 10px; }
+.source-health-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.source-health-heading h2 { margin: 0; }
+.source-health-rows summary { display: flex; justify-content: space-between; gap: 12px; cursor: pointer; padding: 12px 0; }
+.source-health-rows details + details { border-top: 1px solid #dce8e7; }
+.source-health-rows p { overflow-wrap: anywhere; }
+@media (max-width: 520px) { .source-health { padding: 14px; } .source-health-rows summary { flex-wrap: wrap; } }

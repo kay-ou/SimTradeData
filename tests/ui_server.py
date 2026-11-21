@@ -42,4 +42,8 @@ def seed(directory):
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="simtrade-ui-") as directory:
         seed(directory)
+        from simtradedata.web import source_health
+        def healthy(_):
+            return {"freshness": "current", "latest": "2026-11-20", "detail": "隔离测试样本有效"}
+        source_health.daily_probe = source_health.financial_probe = source_health.pcf_probe = healthy
         main(["--data-dir", directory, "--port", "18765"])

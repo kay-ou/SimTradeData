@@ -24,7 +24,7 @@ from simtradedata.config.field_mappings import (
 )
 from simtradedata.config.mootdx_finvalue_map import FULL_FUNDAMENTAL_FIELDS
 from simtradedata.utils.paths import DUCKDB_PATH, safe_rmtree
-from simtradedata.validators.data_validator import validate_before_write
+from simtradedata.validators.data_validator import DataQualityError, validate_before_write
 
 logger = logging.getLogger(__name__)
 
@@ -992,7 +992,6 @@ class DuckDBWriter:
             df = df.rename(columns={"end_date": "date"})
 
         df["date"] = pd.to_datetime(df["date"]).dt.date
-        self._validate_or_warn(df, "fundamental", symbol)
 
         if "publ_date" in df.columns:
             publ_dt = pd.to_datetime(df["publ_date"], errors="coerce")
@@ -1003,6 +1002,16 @@ class DuckDBWriter:
         columns = _FUNDAMENTAL_WRITE_COLUMNS
         available = [c for c in columns if c in df.columns]
         df = df[available]
+
+        df = df.drop_duplicates()
+        if df["date"].duplicated().any():
+            duplicate_rows = df[df["date"].duplicated(keep=False)]
+            if "publ_date" not in df.columns or duplicate_rows["publ_date"].isna().any():
+                raise DataQualityError(f"{symbol}: Conflicting quarters without announcement dates")
+            if duplicate_rows.duplicated(subset=["date", "publ_date"]).any():
+                raise DataQualityError(f"{symbol}: Conflicting quarters with the same announcement date")
+            df = df.sort_values("publ_date").drop_duplicates(subset=["date"], keep="last")
+        self._validate_or_warn(df, "fundamental", symbol)
 
         self._upsert_symbol_rows("fundamentals", df)
 

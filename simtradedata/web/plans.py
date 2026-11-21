@@ -1,12 +1,16 @@
 """Validate update intents and build reviewable, deterministic update plans."""
 
 import re
+import zipfile
 from datetime import date
 from pathlib import Path
 
 from simtradedata.web.coverage import inspect_coverage, quarter_dates
+from simtradedata.web.cache_state import file_signature, financial_signature
+from simtradedata.web.completeness import calendar_covers, daily_pending
+import duckdb
 
-MODES = {"incremental", "refresh", "reparse"}
+MODES = {"auto", "incremental", "refresh", "reparse"}
 DATASETS = {"daily", "fundamentals", "pcf", "calendar"}
 
 
@@ -33,7 +37,7 @@ def validate_request(body):
     symbols = list(dict.fromkeys(symbols))
     if dataset == "fundamentals" and symbols:
         raise ValueError("季度财务包按全市场更新，不接受单证券筛选")
-    if dataset == "calendar" and (symbols or mode != "incremental"):
+    if dataset == "calendar" and (symbols or mode not in {"auto", "incremental"}):
         raise ValueError("交易日历只支持按日期范围同步，不接受证券筛选")
     if dataset == "pcf":
         if not symbols or any(not re.fullmatch(r"15\d{4}\.SZ", symbol) for symbol in symbols):
@@ -48,17 +52,25 @@ def build_plan(data_dir: Path, body):
     coverage = inspect_coverage(data_dir, request["start_date"], request["end_date"], request["symbols"])
     dataset = request["dataset"]
     if dataset == "calendar":
+        done = request["mode"] == "auto" and calendar_covers(data_dir, request["start_date"], request["end_date"])
         return {"request": request, "units": ["交易日历"], "unit_count": 1,
+                "work_pending": not done, "status": "up_to_date" if done else "ready",
                 "existing_records": len(coverage["calendar_dates"]), "missing_dates": 0,
                 "note": "从现有 BaoStock 来源同步选定范围内的真实交易日，作为历史日期缺口的检查基准。",
                 "scope": "只补充交易日历，不下载行情或财务。", "before": coverage}
     item = next(row for row in coverage["datasets"] if row["key"] == dataset)
     cache = data_dir / "downloads"
+    done = False
     if dataset == "daily":
         units = ["沪深日线 ZIP"]
         if request["mode"] == "reparse" and not (cache / "hsjday.zip").exists():
             raise ValueError("尚无日线 ZIP 缓存，请先下载日线数据")
         note = "使用通达信批量历史包，仅导入选定日期和证券。增量只插入缺失记录；刷新和重新解析更新范围内已有值。"
+        if request["mode"] == "auto":
+            try:
+                done = not daily_pending(data_dir, request, coverage)
+            except (ValueError, zipfile.BadZipFile):
+                done = False
     elif dataset == "fundamentals":
         units = quarter_dates(request["start_date"], request["end_date"])
         if not units:
@@ -68,12 +80,44 @@ def build_plan(data_dir: Path, body):
             if missing:
                 raise ValueError(f"缺少 {len(missing)} 个季度缓存，请先下载或缩小范围")
         note = "按季度下载全市场财务包。增量补缺失季度并刷新最近四个季度；强制刷新下载范围内所有季度；重新解析只使用缓存。"
+        if request["mode"] == "auto":
+            receipts = {}
+            completed = set()
+            if (data_dir / "cn.duckdb").exists():
+                with duckdb.connect(str(data_dir / "cn.duckdb"), read_only=True) as conn:
+                    if "fundamentals_progress" in {row[0] for row in conn.execute("SHOW TABLES").fetchall()}:
+                        rows = conn.execute("SELECT year, quarter, file_hash, stock_count FROM fundamentals_progress WHERE stock_count>0").fetchall()
+                        counts = {str(day): count for day, count in conn.execute("SELECT date, COUNT(*) FROM fundamentals GROUP BY date").fetchall()}
+                        completed = {(year, quarter) for year, quarter, _, count in rows if counts.get(f"{year}-{quarter * 3:02d}-{[31,30,30,31][quarter-1]}", 0) >= count}
+                        receipts = {(year, quarter): hash_value for year, quarter, hash_value, _ in rows}
+            mapping = financial_signature()
+            pending = []
+            for day in units:
+                file = data_dir / "mootdx_financial" / f"gpcw{day.replace('-', '')}.zip"
+                quarter = (int(day[:4]), int(day[5:7]) // 3)
+                signature = "local:" + file_signature(file) + mapping if file.exists() else None
+                recorded = receipts.get(quarter) or ""
+                valid = recorded == signature if signature else recorded.startswith("local:") and recorded.endswith(mapping)
+                if not valid or quarter not in completed:
+                    pending.append(day)
+            done = not pending
+            units = pending
     else:
         days = coverage["calendar_dates"]
-        if not days:
+        needs_calendar = request["mode"] == "auto" and not calendar_covers(data_dir, request["start_date"], request["end_date"])
+        if not days and request["mode"] != "auto":
             raise ValueError("本地没有所选范围的交易日历，请先同步交易日历")
-        units = [f"{symbol}|{day}" for symbol in request["symbols"] for day in days]
+        units = [] if needs_calendar else [f"{symbol}|{day}" for symbol in request["symbols"] for day in days]
+        if request["mode"] == "auto" and not needs_calendar:
+            existing = {f"{row['symbol']}|{row['date']}" for row in item["archives"]}
+            units = [unit for unit in units if unit not in existing]
+            done = not units
         note = "逐 ETF、逐交易日获取真实历史清单；增量跳过已有且通过校验的归档。未找到清单的日期记为失败，不以前一日或最新值代替。"
+    if request["mode"] == "auto":
+        note = "先检查本地缓存与已有记录，只获取缺少的数据；已有财务包直接用于补齐字段。"
+    local_files = sum((data_dir / "mootdx_financial" / f"gpcw{day.replace('-', '')}.zip").exists() for day in units) if dataset == "fundamentals" else int((cache / "hsjday.zip").exists()) if dataset == "daily" else len(item["archives"])
     return {"request": request, "units": units, "unit_count": len(units), "existing_records": item["records"],
+            "work_pending": not done, "status": "up_to_date" if done else "ready",
+            "cached_files": local_files, "needs_calendar": dataset == "pcf" and needs_calendar,
             "missing_dates": len(item["missing_dates"]), "note": note,
             "scope": "仅写入所选类别；保留其他数据和日期。", "before": coverage}

@@ -1,4 +1,4 @@
-"""One constrained update process at a time, with durable task summaries."""
+"""One current task in memory; no persisted update history or logs."""
 
 import json
 import os
@@ -8,12 +8,16 @@ import sys
 import threading
 import time
 import uuid
+import tempfile
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from simtradedata.web.coverage import inspect_coverage
 from simtradedata.web.operations import EVENT_PREFIX
 from simtradedata.web.plans import build_plan
+from simtradedata.web.cache_state import migrate_financial_markers
+from simtradedata.web.recommendations import recommend
 
 
 def now():
@@ -29,23 +33,23 @@ def summary(coverage):
 class JobManager:
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir).resolve()
-        self.state_dir = self.data_dir / "ui-jobs"
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.active = None
         self.process = None
         self.plans = {}
         self.cache = {}
-        history = self.state_dir / "history.json"
-        self.jobs = json.loads(history.read_text()) if history.exists() else []
-        for job in self.jobs:
-            if job["status"] in {"running", "cancelling"}:
-                job.update(status="interrupted", stage="interrupted", ended_at=now())
-
-    def _save(self):
-        temporary = self.state_dir / "history.json.tmp"
-        temporary.write_text(json.dumps(self.jobs[:30], ensure_ascii=False, indent=2))
-        temporary.replace(self.state_dir / "history.json")
+        self.jobs = []
+        migrate_financial_markers(self.data_dir)
+        for path in [self.data_dir / "calendar_ranges.json", self.data_dir / "downloads" / "completed_scopes.json", self.data_dir / "downloads" / "hsjday.inventory.json"]:
+            path.unlink(missing_ok=True)
+        old = self.data_dir / "ui-jobs"
+        if old.exists():
+            for path in old.iterdir():
+                if path.is_file() and (path.name in {"history.json", "history.json.tmp"} or re.fullmatch(r"[a-f0-9]{32}\.json", path.name)):
+                    path.unlink()
+            if not any(old.iterdir()):
+                old.rmdir()
 
     def overview(self, start, end, symbols=None):
         key = (start, end, tuple(symbols or []))
@@ -77,6 +81,12 @@ class JobManager:
                 self.plans.pop(next(iter(self.plans)))
             return {key: value for key, value in plan.items() if key != "before"} | {"plan_id": plan_id}
 
+    def recommendation(self, dataset, symbols):
+        with self.lock:
+            if self.active:
+                raise RuntimeError("更新任务运行中，完成后自动检测下一段缺口")
+            return recommend(self.data_dir, dataset, symbols)
+
     def start(self, plan_id):
         with self.lock:
             if self.active:
@@ -85,15 +95,21 @@ class JobManager:
             if not cached or time.monotonic() - cached[0] > 600:
                 raise ValueError("更新预览已过期，请重新预览")
             plan = build_plan(self.data_dir, cached[1]["request"])
+            if not plan.get("work_pending", True):
+                return {"status": "up_to_date", "message": "当前范围已同步，无需重复更新"}
             job_id = uuid.uuid4().hex
-            request_file = self.state_dir / f"{job_id}.json"
-            request_file.write_text(json.dumps(plan["request"]))
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="simtrade-update-", delete=False) as temporary:
+                json.dump(plan["request"], temporary)
+                request_file = Path(temporary.name)
             job = {"id": job_id, "request": plan["request"], "status": "running", "stage": "prepare",
                    "started_at": now(), "ended_at": None, "completed": 0, "total": plan["unit_count"],
                    "message": "准备后台任务", "logs": [], "before": summary(plan["before"]), "after": None}
+            if plan.get("needs_calendar"):
+                for row in job["before"]:
+                    if row["key"] == "pcf":
+                        row["missing_dates"] = None
             self.active = job_id
-            self.jobs.insert(0, job)
-            self.jobs = self.jobs[:30]
+            self.jobs = [job]
             key = (plan["request"]["start_date"], plan["request"]["end_date"], tuple(plan["request"]["symbols"]))
             self.cache[key] = (time.monotonic(), plan["before"])
             root = Path(__file__).resolve().parents[2]
@@ -107,13 +123,12 @@ class JobManager:
             except Exception:
                 self.active = None
                 job.update(status="failed", ended_at=now(), message="后台进程启动失败")
-                self._save()
+                request_file.unlink(missing_ok=True)
                 raise
-            self._save()
-            threading.Thread(target=self._watch, args=(job, self.process), daemon=True).start()
+            threading.Thread(target=self._watch, args=(job, self.process, request_file), daemon=True).start()
             return json.loads(json.dumps(job))
 
-    def _watch(self, job, process):
+    def _watch(self, job, process, request_file):
         try:
             for line in process.stdout:
                 line = line.rstrip()
@@ -141,12 +156,12 @@ class JobManager:
                         job["status"] = "failed"
                 self.active, self.process = None, None
                 self.cache.clear()
-                self._save()
         except Exception as error:
             with self.lock:
                 job.update(status="failed", ended_at=now(), message=str(error))
                 self.active, self.process = None, None
-                self._save()
+        finally:
+            request_file.unlink(missing_ok=True)
 
     def cancel(self, job_id):
         with self.lock:
@@ -159,7 +174,6 @@ class JobManager:
                     self.process.terminate()
                 else:
                     os.killpg(self.process.pid, signal.SIGTERM)
-            self._save()
 
     def list_jobs(self):
         with self.lock:

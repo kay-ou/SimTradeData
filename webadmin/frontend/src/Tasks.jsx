@@ -1,7 +1,7 @@
 import { datasetNames, modeNames, number } from './api';
 
 const statuses = { running: '运行中', cancelling: '正在取消', completed: '已完成', failed: '失败 / 部分失败', cancelled: '已取消', interrupted: '服务中断' };
-const stages = { prepare: '准备', download: '下载 / 读取源文件', write: '校验并入库', verify: '更新后检查', interrupted: '中断' };
+const stages = { prepare: '检查本地数据', download: '下载缺少的数据', write: '解析并保存', verify: '检查更新结果', interrupted: '中断' };
 const bytes = value => `${((value || 0) / 1048576).toFixed(1)} MB`;
 
 function Comparison({ job }) {
@@ -11,12 +11,14 @@ function Comparison({ job }) {
   const after = job.after.find(row => row.key === job.request.dataset);
   if (!before || !after) return null;
   const missing = row => row.null_fields.reduce((total, field) => total + field.missing, 0);
-  return <div className="comparison"><span>记录数 <strong>{number(before.records)} → {number(after.records)}</strong></span><span>日期缺口 <strong>{number(before.missing_dates)} → {number(after.missing_dates)}</strong></span><span>关键字段缺失 <strong>{number(missing(before))} → {number(missing(after))}</strong></span><span>写入 / 刷新 <strong>{number(job.result?.written || 0)}</strong> 条</span></div>;
+  return <div className="comparison"><span>记录数 <strong>{number(before.records)} → {number(after.records)}</strong></span><span>日期缺口 <strong>{before.missing_dates === null ? '待核查' : number(before.missing_dates)} → {number(after.missing_dates)}</strong></span><span>关键字段缺失 <strong>{number(missing(before))} → {number(missing(after))}</strong></span><span>写入 / 刷新 <strong>{number(job.result?.written || 0)}</strong> 条</span></div>;
 }
 
 export default function Tasks({ jobs, onCancel, onRetry }) {
+  if (!jobs.length) return null;
+  jobs = jobs.slice(0, 1);
   return <section className="tasks" id="tasks" aria-labelledby="tasks-title">
-    <div className="section-heading"><div><h2 id="tasks-title">更新记录</h2><p>进度来自实际处理单元。已提交的数据在取消后保留，可增量继续。</p></div><span className="quiet-label">最多保留 30 个任务</span></div>
+    <div className="section-heading"><div><h2 id="tasks-title">当前任务</h2><p>仅显示本次进度与结果，不保存更新历史。</p></div></div>
     {!jobs.length ? <div className="empty-state"><h3>还没有更新任务</h3><p>选择数据和日期，生成预览后即可开始。</p></div> : <div className="task-list">{jobs.map(job => {
       const active = ['running', 'cancelling'].includes(job.status);
       const downloading = job.stage === 'download' && job.downloaded_bytes !== undefined;

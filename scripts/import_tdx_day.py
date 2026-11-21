@@ -55,12 +55,13 @@ RECORD_FORMAT = "<IIIIIfII"  # date, open, high, low, close, amount, volume, res
 # Ensure log directory exists
 Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    filemode="w",
-)
+if __name__ == "__main__":
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        filemode="w",
+    )
 logger = logging.getLogger(__name__)
 
 # Also log to console

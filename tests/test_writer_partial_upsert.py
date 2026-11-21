@@ -98,3 +98,30 @@ def test_key_only_write_preserves_existing_row_and_inserts_new_row(
     assert writer.conn.execute(
         f"SELECT {field} FROM {table} ORDER BY date"
     ).fetchall() == [(10.0,), (None,)]
+
+
+def test_identical_quarters_are_written_once(writer, caplog):
+    frame = pd.DataFrame({'date': ['2017-06-30'] * 2, 'roe': [10., 10.]})
+    assert writer.write_fundamentals('601857.SS', frame) == 1
+    assert writer.conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (1,)
+    assert 'Duplicate quarters' not in caplog.text
+    assert len(frame) == 2
+
+
+def test_quarter_revision_uses_latest_announcement_not_input_order(writer):
+    frame = pd.DataFrame({'date': ['2017-06-30'] * 2,
+                          'publ_date': ['2017-09-01', '2017-08-01'], 'roe': [12., 10.]})
+    assert writer.write_fundamentals('601857.SS', frame) == 1
+    assert writer.conn.execute('SELECT roe,publ_date FROM fundamentals').fetchone() == (12., '20170901')
+
+
+@pytest.mark.parametrize('announcements', [None, [None, '2017-08-01'], ['2017-08-01'] * 2])
+def test_ambiguous_quarters_do_not_write_any_rows(writer, announcements):
+    from simtradedata.validators.data_validator import DataQualityError
+    frame = pd.DataFrame({'date': ['2017-06-30'] * 2, 'roe': [10., 12.]})
+    if announcements is not None:
+        frame['publ_date'] = announcements
+    with pytest.raises(DataQualityError, match='Conflicting quarters'):
+        writer.write_fundamentals('601857.SS', frame)
+    assert writer.conn.execute('SELECT COUNT(*) FROM fundamentals').fetchone() == (0,)
+    assert writer.conn.execute('SELECT COUNT(*) FROM data_change_log').fetchone() == (0,)

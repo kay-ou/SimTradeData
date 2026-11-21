@@ -16,6 +16,8 @@ def seed(directory):
     directory = Path(directory)
     writer = DuckDBWriter(str(directory / "cn.duckdb"))
     writer.conn.execute("INSERT INTO trade_days VALUES ('2026-11-18'), ('2026-11-19'), ('2026-11-20')")
+    writer.conn.execute("CREATE TABLE exchange_calendar(date DATE PRIMARY KEY, is_trading_day BOOLEAN NOT NULL)")
+    writer.conn.execute("INSERT INTO exchange_calendar VALUES ('2026-11-18', true), ('2026-11-19', true), ('2026-11-20', true)")
     writer.write_market_data("600000.SS", pd.DataFrame(
         {"open": [10.0], "high": [11.0], "low": [9.0], "close": [10.5], "volume": [1000], "money": [10500.]},
         index=pd.to_datetime(["2026-11-19"]),

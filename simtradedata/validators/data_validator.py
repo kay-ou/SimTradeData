@@ -265,9 +265,11 @@ class FundamentalDataValidator:
                 issues.append(f"{invalid} rows with negative current_ratio")
         if "debt_equity_ratio" in df.columns:
             debt_equity_ratio = pd.to_numeric(df["debt_equity_ratio"], errors="coerce")
-            invalid = (debt_equity_ratio < -1).sum()
+            # Liabilities / equity * 100 can be negative when equity is negative.
+            # There is no universal lower bound for this percentage ratio.
+            invalid = debt_equity_ratio.isin([float("inf"), float("-inf")]).sum()
             if invalid:
-                issues.append(f"{invalid} rows with debt_equity_ratio < -1")
+                issues.append(f"{invalid} rows with non-finite debt_equity_ratio")
         if issues:
             logger.warning("%s: Fundamental range issues: %s", symbol, "; ".join(issues))
 

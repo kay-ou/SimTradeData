@@ -33,6 +33,10 @@ def handler_for(manager):
             try:
                 if parsed.path == "/api/jobs":
                     self.respond(200, {"jobs": manager.list_jobs()})
+                elif parsed.path == "/api/recommendation":
+                    args = parse_qs(parsed.query)
+                    symbols = args.get("symbols", [""])[0]
+                    self.respond(200, manager.recommendation(args.get("dataset", ["daily"])[0], symbols.split(",") if symbols else []))
                 elif parsed.path == "/api/overview":
                     args = parse_qs(parsed.query)
                     today = date.today().isoformat()

@@ -1,314 +1,50 @@
 [English](README.md) | [中文](README_zh.md) | Deutsch
 
-# SimTradeData - Quantitativer Handelsdaten-Downloader
+# SimTradeData
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-red.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.2.0-brightgreen.svg)](CHANGELOG.md)
-[![DuckDB](https://img.shields.io/badge/Storage-DuckDB-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
-[![Parquet](https://img.shields.io/badge/Export-Parquet-50ABF1)](https://parquet.apache.org/)
-[![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
-[![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
+Lokale Backtesting-Daten für [SimTradeLab](https://github.com/kay-ou/SimTradeLab): chinesische Aktien, ETFs und US-Aktien. Speicherung in DuckDB, Export als Parquet.
 
-> **BaoStock + Mootdx + EastMoney + yfinance Multi-Quelle** | **Chinesische A-Aktien + US-Aktien** | **PTrade-kompatibel** | **DuckDB + Parquet-Speicherung**
+## Weboberfläche starten
 
-**SimTradeData** ist ein effizientes Daten-Download-Tool für [SimTradeLab](https://github.com/kay-ou/SimTradeLab). Es unterstützt chinesische A-Aktien (BaoStock, Mootdx, EastMoney) und US-Aktien (yfinance) aus mehreren Datenquellen mit automatischer Orchestrierung der jeweiligen Stärken. Daten werden in DuckDB als Zwischenspeicher gespeichert und ins Parquet-Format exportiert, mit effizienten inkrementellen Updates und Abfragen.
-
----
-
-<div align="center">
-
-### Empfohlene Kombination: SimTradeData + SimTradeLab
-
-**Voll PTrade-kompatibel | A-Aktien + US-Aktien | 20x+ Backtesting-Beschleunigung**
-
-[![SimTradeLab](https://img.shields.io/badge/SimTradeLab-Quant_Backtesting-blue?style=for-the-badge)](https://github.com/kay-ou/SimTradeLab)
-
-**Keine PTrade-Strategieänderungen nötig** | **Ultraschnelles lokales Backtesting** | **Kostenlose Lösung**
-
-</div>
-
----
-
-## Hauptmerkmale
-
-### Effiziente Speicherarchitektur
-- **DuckDB-Zwischenspeicher**: Hochleistungs-Spaltendatenbank mit SQL-Abfragen und inkrementellen Updates
-- **Parquet-Exportformat**: Hoch komprimiert, plattformübergreifend kompatibel, ideal für Massendatenanalyse
-- **Automatische inkrementelle Updates**: Erkennt vorhandene Daten intelligent, lädt nur neue Datensätze herunter
-
-### Umfassende Datenabdeckung
-- **Marktdaten**: OHLCV-Tagesbalken mit Limit-Up/Down-Preisen und Vortagesschluss
-- **Bewertungskennzahlen**: KGV/KBV/KUV/KCV/Umschlagshäufigkeit/Gesamtaktien/Streubesitz
-- **Finanzdaten**: 223 zugeordnete öffentliche Finanzfelder + bestehende TTM-Berechnungen; siehe [Feldabdeckung](docs/PTRADE_FINANCIAL_COVERAGE.md)
-- **Kapitalmaßnahmen**: Dividenden, Bonusaktien, Bezugsrechte (mit Vorwärts-Anpassungsfaktoren)
-- **Metadaten**: Aktieninfo, Handelskalender, Indexbestandteile, ST/Aussetzungsstatus
-- **US-Aktien**: 6.000+ US-Stammaktien, S&P 500 / NASDAQ-100 Indexbestandteile
-
-### Datenqualitätssicherung
-- **Auto-Validierung**: Datenintegritätsprüfung vor dem Schreiben
-- **Export-Berechnung**: Limitpreise, TTM-Kennzahlen werden beim Export berechnet
-- **Detailliertes Logging**: Umfassende Fehlerprotokolle und Warnungen
-
-## Generierte Datenstruktur
-
-```
-data/
-├── cn.duckdb                        # DuckDB-Datenbank - A-Aktien (Download-Quelle)
-├── us.duckdb                        # DuckDB-Datenbank - US-Aktien (Download-Quelle)
-└── export/                          # Exportierte Parquet-Dateien (nach Markt)
-    ├── cn/                          # A-Aktien-Export
-    │   ├── stocks/                  # Tagesbalken (eine Datei pro Aktie)
-    │   │   ├── 000001.SZ.parquet
-    │   │   └── 600519.SS.parquet
-    │   ├── exrights/                # Kapitalmaßnahmen
-    │   ├── fundamentals/            # Quartalsfinanzdaten (mit TTM)
-    │   ├── valuation/               # Bewertungskennzahlen (täglich)
-    │   ├── metadata/                # Metadaten
-    │   └── manifest.json
-    └── us/                          # US-Aktien-Export
-        ├── stocks/
-        │   ├── AAPL.US.parquet
-        │   └── MSFT.US.parquet
-        ├── exrights/
-        ├── fundamentals/
-        ├── valuation/
-        ├── metadata/
-        └── manifest.json
-```
-
-## Voraussetzungen
-
-- **Python**: 3.10 oder höher
-- **uv**: [Installationsanleitung](https://docs.astral.sh/uv/getting-started/installation/)
-- **Nur für lokale CI**: Node.js 20+ mit npm; `npm install` ist nicht erforderlich
-- **Netzwerk**: Zum Herunterladen von Daten erforderlich (für A-Aktien-Daten wird ein chinesisches Festlandnetzwerk empfohlen)
-
-## Schnellstart
-
-### Option 1: Vorgefertigte Daten herunterladen (Empfohlen)
-
-Laden Sie die neuesten Daten von [Releases](https://github.com/kay-ou/SimTradeData/releases) herunter:
-
-- **A-Aktien**: `data-cn-v*` Release → nach `data/cn/` entpacken
-- **US-Aktien**: `data-us-v*` Release → nach `data/us/` entpacken
+Python 3.10+, [uv](https://docs.astral.sh/uv/getting-started/installation/) und Node.js 20+ mit npm installieren. Im Projektverzeichnis:
 
 ```bash
-# A-Aktien
-mkdir -p /path/to/SimTradeLab/data/cn
-tar -xzf simtradelab-data-cn-*.tar.gz -C /path/to/SimTradeLab/data/cn/
-
-# US-Aktien
-mkdir -p /path/to/SimTradeLab/data/us
-tar -xzf simtradelab-data-us-*.tar.gz -C /path/to/SimTradeLab/data/us/
+npm run ui
 ```
 
-### Option 2: Daten selbst herunterladen
-
-#### 1. Abhängigkeiten installieren
+Die im Terminal angezeigte Adresse öffnen (ab **http://127.0.0.1:8765**, belegte Ports werden automatisch übersprungen). Optional einen festen Port wählen:
 
 ```bash
-git clone https://github.com/kay-ou/SimTradeData.git
-cd SimTradeData
-uv sync
+npm run ui -- --port 8767
 ```
 
-#### 2. Daten herunterladen
+Mit **更新回测数据** werden Aktien und ETFs gemeinsam ergänzt. Gültige vorhandene Daten werden übersprungen. Fortschritt, Abbruch und Wiederholung fehlgeschlagener Einheiten sind sichtbar. Aktien- und ETF-Statistiken werden getrennt angezeigt; Quartalsberichte und ETF-PCF stehen unter **其他数据**.
 
-**Empfohlen: Einheitlicher Download-Befehl**
+Standarddatenbank: `data/cn.duckdb`; anderes Verzeichnis mit `--data-dir /path/to/data`. Der Datenbestand bestimmt den Aktualisierungsbedarf; kein gespeicherter Downloadverlauf. `npm run ui` installiert Abhängigkeiten und baut bei Bedarf automatisch. Der erste freie Port ab 8765 wird gewählt; die Adresse steht im Terminal. Chinesisch, Englisch und Deutsch sind oben umschaltbar; die erste Auswahl folgt dem Browser; die manuelle Auswahl wird gespeichert. US-Daten und Exporte erfolgen über die CLI.
 
-Ein Befehl lädt alle Daten herunter, nutzt das TDX-Tagespaket für den schnellen OHLCV-Pfad und orchestriert danach Mootdx und BaoStock:
+## Fertige Daten oder CLI
+
+[Releases](https://github.com/kay-ou/SimTradeData/releases) bieten `data-cn-v*` und `data-us-v*`. Parquet-Dateien nach SimTradeLab `data/cn/` bzw. `data/us/` entpacken. Diese Pakete sind keine aktualisierbaren DuckDB-Quelldatenbanken.
+
+Für die CLI Python und uv installieren, `uv sync` ausführen, dann:
 
 ```bash
-# Tägliche/produktive CN-Aktualisierung (empfohlen)
 uv run python scripts/download.py
-
-# Alte Flags bleiben kompatibel; Paketfehler aktivieren keine Mootdx-Tagesdaten
-uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
-
-# Bereits heruntergeladene TDX-ZIP-Datei verwenden
-uv run python scripts/download.py --tdx-source data/downloads/hsjday.zip --skip-mootdx-ohlcv
-
-# Datenstatus prüfen
-uv run python scripts/download.py --status
-
-# Finanzdaten überspringen (schneller)
-uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv --skip-fundamentals
-
-# Nur Mootdx-Zusatzdaten (keine OHLCV-Tagesdaten)
-uv run python scripts/download.py --source mootdx
-```
-
-**Arbeitsteilung der Datenquellen**
-
-| Datentyp | Quelle | Grund |
-|----------|--------|-------|
-| OHLCV-Marktdaten (taeglich/Vollhistorie) | TDX-Tagespaket | Am schnellsten, ~500MB Massenimport plus aktuelle Tagesdaten |
-| OHLCV-Marktdaten (Einzelabfragen) | EastMoney, danach BaoStock | Unabhängige Tagesabfragen; Mootdx-Tagesdaten sind im Standardrouting deaktiviert |
-| Kapitalmaßnahmen (XDXR) | Mootdx | Vollständigere Daten |
-| Massenfinanzdaten | Mootdx | Ein ZIP = alle Aktien |
-| Bewertung KGV/KBV/KUV/Umschlag | BaoStock | Exklusive Daten |
-| ST/Aussetzungsstatus | BaoStock | Exklusive Daten |
-| Indexbestandteile | BaoStock | Exklusive Daten |
-| Handelskalender | BaoStock | Unabhängiger Börsenkalender |
-| Benchmark-Index | TDX-Paket / BaoStock | Massenimport / Einzelabfragen |
-
-TDX übernimmt standardmäßig OHLCV, Mootdx Kapitalmaßnahmen und Massenfinanzdaten,
-BaoStock Bewertung, Status, Kalender und Indexabfragen. Ein fehlgeschlagenes
-TDX-Paket löst keinen Rückfall auf Mootdx-Tagesdaten aus.
-
-**US-Aktiendaten (yfinance)**
-
-```bash
-# Vollständiger Download (6.000+ US-Aktien mit OHLCV + Finanzdaten + Bewertung + Metadaten)
-uv run python scripts/download_us.py
-
-# Bestimmte Symbole (für kleine Tests)
-uv run python scripts/download_us.py --symbols AAPL,MSFT,GOOGL
-```
-
-#### 3. Nach Parquet exportieren
-
-```bash
-# A-Aktien exportieren → data/export/cn/
 uv run python scripts/export_parquet.py
-
-# US-Aktien exportieren → data/export/us/
-uv run python scripts/export_parquet.py --market us
-
-# Benutzerdefiniertes Ausgabeverzeichnis
-uv run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
-Der normale Export erstellt das Zielverzeichnis vollständig aus DuckDB neu; er führt die vorhandenen Parquet-Dateien nicht direkt zusammen.
+Standardexport: `data/export/cn/`. Weboberfläche und CLI nicht gleichzeitig in dieselbe Datenbank schreiben lassen.
 
-#### 4. Daten veröffentlichen (Maintainer)
+## Dokumentation und Grenzen
 
-Beide Vertriebskanäle verwenden denselben DuckDB-/Parquet-Snapshot, veröffentlichen aber unterschiedliche Artefakte:
+| Thema | Anleitung |
+| --- | --- |
+| Oberfläche und Datenpflege | [Web-Anleitung](docs/WEB_DATA_ADMIN.md) |
+| US-Daten und Parquet-Export | [CLI-Anleitung](docs/CLI_GUIDE.md) |
+| Datenabdeckung und PTrade-Grenzen | [Datenabdeckung](docs/PTRADE_DATA_COVERAGE.md) |
+| CI, Überwachung und Wiederherstellung | [Betrieb](docs/OPERATIONS.md) |
+| Formate, Finanzfelder und PCF | [Dokumentationsübersicht](docs/README.md) |
 
-- **GitHub Releases** veröffentlicht ausschließlich vollständige Baseline-Archive.
-- **Tencent COS** veröffentlicht eine vollständige Baseline und, wenn die vorherige COS-Version sicher fortgeschrieben werden kann, zusätzlich ein inkrementelles Archiv. Der Index `releases.json` macht beide für Clients auffindbar.
+Detailanleitungen werden auf Chinesisch gepflegt; die Betriebsdokumentation enthält Englisch. 223 öffentliche Finanzfelder sind zugeordnet. Vollständige PTrade-Gleichwertigkeit, historische Wertpapierlisten und lückenlose PCF-Historien sind nicht garantiert. ETF-Kursbacktests benötigen keine PCF. Erfolgreiche Stichproben beweisen keine vollständige Historie.
 
-```bash
-# A-Aktiendaten auf GitHub veröffentlichen
-bash scripts/release_data.sh --market cn
-
-# Die Release-Version stammt aus data/export/<market>/manifest.json
-
-# Baseline und, wenn möglich, ein Delta auf Tencent COS veröffentlichen
-COS_SECRET_ID=... COS_SECRET_KEY=... bash scripts/release_data.sh \
-  --market cn --publish-targets cos --cos-bucket BUCKET --cos-region REGION
-```
-
-#### 5. In SimTradeLab verwenden
-
-```bash
-rsync -a data/export/cn/ /path/to/SimTradeLab/data/cn/
-rsync -a data/export/us/ /path/to/SimTradeLab/data/us/
-```
-
-## Datenfeld-Referenz
-
-### stocks/ - Tägliche Aktienbalken
-| Feld | Beschreibung |
-|------|-------------|
-| date | Handelstag |
-| open/high/low/close | OHLC-Preise |
-| high_limit/low_limit | Limit-Up/Down-Preise (beim Export berechnet) |
-| preclose | Vortagesschluss |
-| volume | Handelsvolumen (Aktien) |
-| money | Handelsbetrag (CNY) |
-
-### valuation/ - Bewertungskennzahlen (Täglich)
-| Feld | Beschreibung |
-|------|-------------|
-| pe_ttm/pb/ps_ttm/pcf | Bewertungskennzahlen |
-| roe/roe_ttm/roa/roa_ttm | Rentabilitätskennzahlen |
-| naps | Nettovermögen je Aktie |
-| total_shares/a_floats | Gesamtaktien / Streubesitz |
-| turnover_rate | Umschlagshäufigkeit |
-
-### fundamentals/ - Finanzdaten (Vierteljährlich)
-Enthält zugeordnete Quartalsfelder und bestehende TTM-Kennzahlen. Feldabdeckung und semantische Grenzen: [PTRADE_FINANCIAL_COVERAGE.md](docs/PTRADE_FINANCIAL_COVERAGE.md).
-
-## Datenquellen-Vergleich
-
-| Merkmal | BaoStock | Mootdx API | EastMoney | TDX-Paket | yfinance (US) |
-|---------|----------|------------|-----------|-----------|---------------|
-| Markt | A-Aktien | A-Aktien | A-Aktien | A-Aktien | US-Aktien |
-| Geschwindigkeit | Langsamer | Schnell | Schnell | Am schnellsten | Mittel |
-| Bewertungsdaten | Ja | Nein | Nein | Nein | Ja (berechnet) |
-| Finanzdaten | Ja (pro Aktie) | Ja (Massen-ZIP) | Nein | Nein | Ja (pro Aktie) |
-| Geldfluss | Nein | Nein | Ja (exklusiv) | Nein | Nein |
-| API-Schlüssel | Nicht erforderlich | Nicht erforderlich | Nicht erforderlich | N/A | Nicht erforderlich |
-
-## Inkrementeller Aktualisierungsablauf
-
-```bash
-# 1. Nur neue Daten herunterladen; vorhandene Daten werden übersprungen
-uv run python scripts/download.py --tdx-download --skip-mootdx-ohlcv
-
-# 2. Vollständigen Parquet-Snapshot exportieren (ersetzt das Ausgabeverzeichnis)
-uv run python scripts/export_parquet.py
-
-# 3. Nur für Maintainer: eigenständiges Delta-Paket exportieren
-uv run python scripts/export_parquet.py --delta --base-version 2026-06-20 --target-version 2026-06-22
-```
-
-Der Delta-Export erzeugt ein separates Paket mit den geänderten Zeilen der Symboltabellen und einem Manifest für das angegebene Versionsfenster.
-
-Endnutzer führen diesen Delta-Befehl nicht aus und wählen keinen Aktualisierungsmodus. SimTradeDeskX fordert bei SimTradeAPI eine automatische Aktualisierung an: Zuerst wird ein konfigurierter dynamischer Delta-Endpunkt verwendet, danach eine statische COS-Delta-Kette. Bei der Erstinstallation, einer unvollständigen Delta-Kette oder einem fehlgeschlagenen Delta wird automatisch auf eine vollständige Baseline zurückgegriffen. Die API wendet die gesamte Delta-Kette zunächst auf einen Snapshot an und veröffentlicht ihn anschließend durch atomaren Verzeichnistausch. Bei einem Fehler bleiben die bisherigen nutzbaren Daten erhalten. GitHub Releases dienen als vollständiger Baseline-Fallback; COS unterstützt die indexierte inkrementelle Verteilung.
-
-## Tests
-
-```bash
-# Vollständige lokale CI: Python 3.10 und 3.12, wie in GitHub Actions
-npm run ci:full
-
-# Nur eine Python-Version prüfen
-npm run ci:full -- --python 3.12
-
-uv run pytest tests/ -v
-
-# Offline-Regressionstests ohne Socket-Zugriff
-uv run --frozen pytest tests/ --disable-socket -m "not external and not performance"
-
-# Live-Datenquellen prüfen, einschließlich Aktualität (Netzwerk erforderlich)
-uv run --frozen python -m scripts.check_data_sources
-
-# Verbleibende Mootdx-Schnittstellen und Quartalsberichte unabhängig prüfen
-uv run --frozen python -m scripts.check_mootdx_interfaces
-```
-
-Die vollständige CI verwendet getrennte Umgebungen unter `.venv-ci/`.
-Test- und Abdeckungsberichte liegen unter `reports/ci/python-<version>/`,
-die Phasenergebnisse in `reports/ci/summary.json` und Pakete unter
-`dist/ci/python-<version>/`.
-
-GitHub Actions führt bei Pushes, Pull Requests und manuellen Aufrufen Offline-Tests
-und Paket-Builds aus. Ein separater Zeitplan prüft die Datenquellen zweimal täglich,
-jeweils ohne Fallback. Berichte, Aktualitätsregeln und Einschränkungen stehen in der
-[Betriebsdokumentation](docs/OPERATIONS.md#ci-and-data-source-monitoring).
-
-## Verwandte Links
-
-- **SimTradeLab**: https://github.com/kay-ou/SimTradeLab
-- **BaoStock**: http://baostock.com/
-- **Mootdx**: https://github.com/mootdx/mootdx
-- **yfinance**: https://github.com/ranaroussi/yfinance
-
-## 💖 Sponsoring
-
-Wenn dieses Projekt Ihnen hilft, erwägen Sie eine Spende!
-
-| WeChat Pay | Alipay |
-|:---:|:---:|
-| <img src="docs/sponsor/WechatPay.png?raw=true" alt="WeChat Pay" width="200"> | <img src="docs/sponsor/AliPay.png?raw=true" alt="Alipay" width="200"> |
-
-## Lizenz
-
-Dieses Projekt ist unter AGPL-3.0 lizenziert. Siehe [LICENSE](LICENSE).
-
----
-
-**Status**: Produktionsbereit | **Version**: v1.2.0 | **Letzte Aktualisierung**: 2026-03-13
+[Änderungen](CHANGELOG.md) · [Lizenz: AGPL-3.0](LICENSE)

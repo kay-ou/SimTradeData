@@ -1,3 +1,4 @@
+import { locale } from './i18n';
 export async function api(path, body, signal) {
   const response = await fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
@@ -16,4 +17,4 @@ export async function api(path, body, signal) {
 
 export const datasetNames = { daily: '日线行情', fundamentals: '季度财务', pcf: 'ETF申赎清单', calendar: '交易日历' };
 export const modeNames = { auto: '智能补齐', incremental: '增量补充', refresh: '指定范围刷新', reparse: '缓存重新解析', repair: '定向修补' };
-export const number = (value) => new Intl.NumberFormat('zh-CN').format(value ?? 0);
+export const number = (value) => new Intl.NumberFormat(locale()).format(value ?? 0);

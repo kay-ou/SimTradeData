@@ -151,7 +151,7 @@ It does not certify every financial field or quarterly publication timeliness.
 Minute bars are checked against the independent CN exchange calendar.
 Block checks reject malformed codes and duplicate memberships within a file/block.
 Historical transactions and curves retain vendor fields; they do not certify
-Level-2 equivalence or complete history. See [TDX data access](TDX_DATA_ACCESS.md).
+Level-2 equivalence or complete history. See [TDX data access](PTRADE_DATA_COVERAGE.md#通达信获取示例).
 Reports are saved as the `mootdx-interfaces` artifact, separately from daily bars.
 
 The independent `etf-pcf` job checks official SSE/SZSE PCF for `510300.SS`
@@ -272,3 +272,69 @@ mutate data from this task.
 - Partial COS publish: an unindexed delta archive is safe to leave in object
   storage; clients cannot discover it. Do not add its index entry until the
   corresponding baseline publication has succeeded.
+
+## 网页管理台维护
+
+日常操作见[网页指南](WEB_DATA_ADMIN.md)。以下是数据库恢复、性能复测和前端开发说明。
+
+### DuckDB 索引错误的恢复
+
+变更表采用按主键更新 `changed_at` 的写法，避免 `INSERT OR REPLACE` 的删除重插入。
+二级索引仅包含 `table_name/date`，不索引每次修补都会变化的时间戳；旧索引在可正常打开的库中迁移重建。
+发生 DuckDB `FatalException` 时连接已失效，不再尝试回滚而覆盖原始错误。
+
+实际故障库曾通过只读逻辑导出重建恢复，并核对所有表记录数及行情、财务和变更表全字段校验值。连接发生致命错误时先停止写入、保留数据库与WAL，再在副本上验证恢复；不要直接覆盖健康库。
+
+### 财务导入性能
+
+季度财务沿用单个 DuckDB 写入进程，每 500 家公司批量入库，整季度仍在同一事务内提交。
+任一批次失败时回滚该季度；不将部分入库标为完成。逐公司的字段校验、重复季度处理、
+未提供字段保留和变更标记继续执行。任务结果与当前日志提供下载、解析和入库分段耗时，不保存计时历史。
+
+可使用本地财务包复测性能，脚本只复制源包并写临时数据库，不下载或修改生产数据：
+
+```bash
+uv run python -m scripts.benchmark_financial_import data/mootdx_financial/gpcw20241231.zip --companies 100
+```
+
+增加单行去重跳过后，最新 500 家公司样本实测：逐公司写入 25.66 秒，批量写入 1.40 秒，约快 18.3 倍；
+两种方式的所有财务字段结果一致。这是样本测量，不是全季度或所有机器的速度承诺。
+下载并发尚未增加，当前先优化实测占主要耗时的入库阶段。
+
+### 开发与验证
+
+日常启动用 `npm run ui`，自动安装前端依赖和按需构建；后端入口仍为 `python -m simtradedata.web`，前端位于 `webadmin/frontend/`。
+构建产物位于 `simtradedata/web/static/`，由本地服务提供。
+
+```bash
+npm run ui:build
+npm --prefix webadmin/frontend exec playwright install chromium
+npm run ui:test
+npm run ci:full
+```
+
+浏览器测试用临时数据库和本地 ZIP 验证“覆盖检查 → 启动更新 → 真实缓存导入 → 更新后检查”，
+以及手机布局、无效参数和来源检查，不下载或修改生产数据。
+CI 已增加独立前端构建和浏览器测试作业。远端下载仍受数据源可用性影响。
+
+## 发布命令
+
+两个分发渠道都来自同一份 DuckDB/Parquet 快照，但发布内容不同：
+
+- **GitHub Releases** 只发布完整基线包。
+- **腾讯云 COS** 发布完整基线；当 COS 上一版本可以安全推进时，同时发布增量包，并通过 `releases.json` 索引供客户端发现。
+
+```bash
+# 发布 A股数据
+bash scripts/release_data.sh --market cn
+
+# 发布美股数据
+bash scripts/release_data.sh --market us
+
+# 发布版本来自 data/export/<market>/manifest.json
+
+# 发布完整基线，并在可用时同时发布 COS 增量包
+COS_SECRET_ID=... COS_SECRET_KEY=... bash scripts/release_data.sh \
+  --market cn --publish-targets cos --cos-bucket BUCKET --cos-region REGION
+```
+

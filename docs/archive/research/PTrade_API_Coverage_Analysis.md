@@ -1,5 +1,7 @@
 # SimTradeData PTrade API 数据覆盖分析报告
 
+> 历史归档：本文描述当时的研究或测试结论，不作为当前实现与覆盖承诺。现行说明见[数据覆盖](../../PTRADE_DATA_COVERAGE.md)，操作入口见[文档导航](../../README.md)。
+
 **生成时间**: 2025-09-30
 **分析范围**: SimTradeData 数据存储与 PTrade API 对接能力
 **参考文档**: PTrade_API_mini_Reference.md, Ptrade_Financial_API.md
@@ -410,7 +412,7 @@ SimTradeData 实现了数据源优先级管理 (`data_sources/manager.py`)，针
        - ⭐ 财务数据: FINVALUE提供322个字段，覆盖PTrade所需的81%
        - ⭐ 深度行情: 100%覆盖逐笔委托/成交
      - **实施建议**: 主数据源，配合BaoStock和QStock
-     - **详细分析**: 见 [mootdx数据源深度分析](./mootdx_analysis.md)
+     - **详细分析**: 见 [mootdx数据源深度分析](DataSource_mootdx_Analysis.md)
 
    **其他可选源** (长期考虑):
    - Tushare Pro (财务数据更全面,但需付费)
@@ -523,11 +525,11 @@ SimTradeData 作为数据存储层,通过 PTradeAPIAdapter 为 SimTradeLab 提�
 
 ## 📚 参考文档
 
-- [PTrade API Mini Reference](./PTrade_API_mini_Reference.md) - 市场数据API
-- [PTrade Financial API](./Ptrade_Financial_API.md) - 财务数据API(9张表,397字段)
-- [财务数据源API能力分析](./Financial_Data_Source_API_Analysis.md) - ⭐ 数据源详细分析和实现方案
-- [SimTradeData API Reference](./API_REFERENCE.md) - 当前实现的API
-- [数据库架构文档](../simtradedata/database/schema.py) - 数据库表结构
+- [PTrade API Mini Reference](../../reference/PTrade_API_mini_Reference.md) - 市场数据API
+- [PTrade Financial API](../requirements/Ptrade_Financial_API.md) - 财务数据API(9张表,397字段)
+- 财务数据源API能力分析（原引用文件未保留：`./Financial_Data_Source_API_Analysis.md`） - ⭐ 数据源详细分析和实现方案
+- SimTradeData API Reference（原引用文件未保留：`./API_REFERENCE.md`） - 当前实现的API
+- 数据库架构文档（原引用文件未保留：`../simtradedata/database/schema.py`） - 数据库表结构
 
 ---
 
@@ -567,4 +569,4 @@ SimTradeData 作为数据存储层,通过 PTradeAPIAdapter 为 SimTradeLab 提�
    - **权威性优先场景**: 使用BaoStock官方API（季度聚合指标）
    - **实际建议**: 组合使用，互为补充和备份
 
-详细的mootdx技术分析请参考 [mootdx_analysis.md](./mootdx_analysis.md)。
+详细的mootdx技术分析请参考 [mootdx_analysis.md](DataSource_mootdx_Analysis.md)。

@@ -13,7 +13,7 @@ from simtradedata.cache import DEFAULT_TTL, cached
 from simtradedata.config.field_mappings import MARKET_FIELD_MAP
 from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
 from simtradedata.fetchers.mootdx_fetcher import MootdxFetcher
-from simtradedata.utils.code_utils import convert_to_ptrade_code
+from simtradedata.utils.code_utils import convert_to_ptrade_code, is_etf_code
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,6 @@ class MootdxUnifiedFetcher:
         # Filter to stock and ETF codes (exclude indices, bonds, warrants)
         sz_stock_prefixes = ("000", "001", "002", "003", "300", "301", "302")
         sh_stock_prefixes = ("600", "601", "603", "605", "688", "689")
-        etf_prefixes = ("15", "16", "50", "51", "52", "56", "58", "59")
 
         codes = []
         for _, row in df.iterrows():
@@ -145,13 +144,12 @@ class MootdxUnifiedFetcher:
             if not code or len(code) != 6:
                 continue
 
-            first_two = code[:2]
             first_three = code[:3]
 
             if (
                 first_three in sz_stock_prefixes
                 or first_three in sh_stock_prefixes
-                or first_two in etf_prefixes
+                or is_etf_code(code)
             ):
                 codes.append(convert_to_ptrade_code(code, "qstock"))
 

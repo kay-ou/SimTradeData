@@ -135,7 +135,7 @@ def get_mootdx_market(symbol: str) -> int:
     return 0 if code[0] in "0123" else 1
 
 
-_ETF_PREFIXES = ("15", "16", "50", "51", "52", "56", "58", "59")
+_ETF_PREFIXES = ("15", "16", "50", "51", "52", "53", "55", "56", "58", "59")
 
 
 def is_etf_code(symbol: str) -> bool:

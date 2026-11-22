@@ -247,8 +247,7 @@ def is_stock_code(filename: str) -> bool:
         return False
 
     # ETF/LOF/fund prefixes (both markets)
-    etf_prefixes = ("15", "16", "50", "51", "52", "56", "58", "59")
-    if code[:2] in etf_prefixes:
+    if is_etf_code(code):
         return True
 
     # Stock prefixes by market

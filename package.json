@@ -6,7 +6,7 @@
   },
   "scripts": {
     "ci:full": "node scripts/cicd/run.mjs",
-    "ui": "uv run python -m simtradedata.web",
+    "ui": "node scripts/ui/start.mjs",
     "ui:build": "npm --prefix webadmin/frontend run build",
     "ui:test": "npm --prefix webadmin/frontend test"
   }

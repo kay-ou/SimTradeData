@@ -21,7 +21,8 @@ def recommend(data_dir, dataset, symbols=None):
     if database.exists() and table:
         with duckdb.connect(str(database), read_only=True) as conn:
             if table in {row[0] for row in conn.execute("SHOW TABLES").fetchall()}:
-                first = conn.execute(f"SELECT MIN(date) FROM {table}").fetchone()[0]
+                where = ' WHERE symbol IN (' + ','.join('?' for _ in symbols) + ')' if symbols else ''
+                first = conn.execute(f"SELECT MIN(date) FROM {table}" + where, symbols or []).fetchone()[0]
                 if first:
                     start, initialized = str(first), True
     if dataset == "pcf":
@@ -32,16 +33,17 @@ def recommend(data_dir, dataset, symbols=None):
                                 "end_date": end.isoformat(), "symbols": symbols or []})
     gap = {}
     if dataset == "daily":
-        coverage = inspect_coverage(data_dir, start, request["end_date"], symbols)
+        coverage = inspect_coverage(data_dir, start, request["end_date"], symbols, include_pcf=False)
         pending = daily_database_pending(data_dir, request, coverage, gap)
         quality_issues = coverage["datasets"][0].get("invalid_records", 0)
+        not_applicable = coverage["datasets"][0].get("not_applicable_records", 0)
         if gap:
             request.update(gap)
         if gap:
-            coverage = inspect_coverage(data_dir, request["start_date"], request["end_date"], symbols)
+            coverage = inspect_coverage(data_dir, request["start_date"], request["end_date"], symbols, include_pcf=False)
         # The DB check already determined pending work. Source files are read during import.
         plan = {"work_pending": pending, "cached_files": int((data_dir / "downloads" / "hsjday.zip").exists()),
-                "existing_records": coverage["datasets"][0]["records"], "needs_calendar": False, "update_summary": {"quality_issues": quality_issues}}
+                "existing_records": coverage["datasets"][0]["records"], "needs_calendar": False, "update_summary": {"quality_issues": quality_issues, "not_applicable_records": not_applicable}}
     else:
         plan = build_plan(data_dir, request)
         if dataset in {"fundamentals", "pcf"} and plan["units"]:

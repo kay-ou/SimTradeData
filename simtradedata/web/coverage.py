@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from simtradedata.config.mootdx_finvalue_map import FULL_FUNDAMENTAL_FIELDS
+from simtradedata.web.daily_categories import DAILY_CATEGORIES, ETF_SYMBOL_PATTERN, STOCK_SYMBOL_PATTERN, NON_TRADING_ETF_CODES
 from simtradedata.utils.ttm_calculator import get_quarters_in_range
 
 CORE_FIELDS = ["basic_eps", "total_assets", "good_will", "administration_expense", "total_operating_revenue", "diluted_eps"]
@@ -20,14 +21,21 @@ def quarter_dates(start, end):
 
 def trading_dates(conn, start, end):
     tables = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
-    if "trade_days" not in tables:
+    if "exchange_calendar" in tables:
+        source = "SELECT date FROM exchange_calendar WHERE is_trading_day IS TRUE"
+        if "trade_days" in tables:
+            source += """ UNION SELECT t.date FROM trade_days t WHERE NOT EXISTS (
+                SELECT 1 FROM exchange_calendar c WHERE c.date=t.date AND c.is_trading_day IS NOT NULL)"""
+    elif "trade_days" in tables:
+        source = "SELECT date FROM trade_days"
+    else:
         return []
     return [str(row[0]) for row in conn.execute(
-        "SELECT date FROM trade_days WHERE date BETWEEN ? AND ? ORDER BY date", [start, end],
+        f"SELECT date FROM ({source}) WHERE date BETWEEN ? AND ? ORDER BY date", [start, end],
     ).fetchall()]
 
 
-def inspect_coverage(data_dir: Path, start: str, end: str, symbols=None):
+def inspect_coverage(data_dir: Path, start: str, end: str, symbols=None, include_pcf=True):
     symbols = symbols or []
     result = {"start_date": start, "end_date": end, "symbols": symbols, "busy": False,
               "datasets": [], "calendar_available": False}
@@ -74,10 +82,18 @@ def inspect_coverage(data_dir: Path, start: str, end: str, symbols=None):
             candidates = quarter_dates(start, end) if key == "fundamentals" else expected
             item["expected_dates"] = len(candidates)
             item["missing_dates"] = sorted(set(candidates) - set(item["dates"]))
+            if key == 'daily':
+                item['categories'] = daily_categories(conn if 'stocks' in tables else None,
+                                                     where if 'stocks' in tables else '',
+                                                     params if 'stocks' in tables else [], expected)
             result["datasets"].append(item)
     finally:
         if conn:
             conn.close()
+
+    result['calendar_dates'] = expected
+    if not include_pcf:
+        return result
 
     item = {"key": "pcf", "name": "ETF 历史 PCF", "kind": "historical", "records": 0,
             "securities": 0, "first_date": None, "last_date": None, "dates": [], "missing_dates": [],
@@ -107,6 +123,34 @@ def inspect_coverage(data_dir: Path, start: str, end: str, symbols=None):
     item["expected_dates"] = len(targets) * len(expected)
     result["datasets"].append(item)
     result["calendar_dates"] = expected
+    return result
+
+
+def daily_categories(conn, where, params, expected):
+    result = []
+    columns = {row[0] for row in conn.execute('DESCRIBE stocks').fetchall()} if conn is not None else set()
+    if conn is not None:
+        groups = conn.execute("""SELECT CASE
+            WHEN regexp_full_match(symbol, ?) AND symbol NOT IN (SELECT unnest(?::VARCHAR[])) THEN 'etf_daily'
+            WHEN regexp_full_match(symbol, ?) THEN 'stock_daily' ELSE 'other_daily' END AS category,
+            COUNT(*),COUNT(DISTINCT symbol),MIN(date),MAX(date),list(DISTINCT date ORDER BY date),
+            """ + ','.join(f'COUNT(*) FILTER (WHERE {field} IS NULL OR NOT isfinite({field}))' if field in columns else '0'
+                           for field in ['open','high','low','close','volume','money']) +
+            ' FROM stocks WHERE ' + where + ' GROUP BY category',
+            [ETF_SYMBOL_PATTERN, list(NON_TRADING_ETF_CODES), STOCK_SYMBOL_PATTERN, *params]).fetchall()
+        groups = {row[0]: row for row in groups}
+    else:
+        groups = {}
+    for key, name in DAILY_CATEGORIES:
+        row = groups.get(key)
+        dates = [str(day) for day in row[5]] if row else []
+        result.append({'key':key, 'name':name, 'kind':'historical', 'records':row[1] if row else 0,
+                       'securities':row[2] if row else 0, 'first_date':str(row[3]) if row else None,
+                       'last_date':str(row[4]) if row else None, 'dates':dates,
+                       'expected_dates':len(expected), 'missing_dates':sorted(set(expected)-set(dates)),
+                       'null_fields':[{'field':field,'missing':count} for field,count in
+                                      zip(['open','high','low','close','volume','money'], row[6:] if row else [0]*6)],
+                       'absent_fields':[field for field in ['open','high','low','close','volume','money'] if field not in columns]})
     return result
 
 

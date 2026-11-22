@@ -1,6 +1,7 @@
 """Loopback HTTP UI: JSON endpoints, static assets, fixed update intents."""
 
 import argparse
+import errno
 import json
 import mimetypes
 import os
@@ -14,12 +15,15 @@ from urllib.parse import parse_qs, urlsplit
 from simtradedata.web.jobs import JobManager
 from simtradedata.web.plans import validate_request
 from simtradedata.web.source_health import SourceHealth
+from simtradedata.web.etf_catalogue import EtfCatalogue
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 def handler_for(manager, health=None, restart_enabled=False):
     instance_id = uuid.uuid4().hex
+    catalogue = EtfCatalogue(manager.data_dir)
+    manager.etf_catalogue = catalogue
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -40,6 +44,8 @@ def handler_for(manager, health=None, restart_enabled=False):
                     self.respond(200, {"instance_id": instance_id, "restart_supported": restart_enabled})
                 elif parsed.path == "/api/source-health" and health is not None:
                     self.respond(200, health.snapshot())
+                elif parsed.path == "/api/etfs":
+                    self.respond(200, catalogue.get())
                 elif parsed.path == "/api/jobs":
                     self.respond(200, {"jobs": manager.list_jobs()})
                 elif parsed.path == "/api/recommendation":
@@ -53,7 +59,10 @@ def handler_for(manager, health=None, restart_enabled=False):
                                                 "start_date": args.get("start_date", [(date.today() - timedelta(days=90)).isoformat()])[0],
                                                 "end_date": args.get("end_date", [today])[0],
                                                 "symbols": args.get("symbols", [""])[0].split(",") if args.get("symbols", [""])[0] else []})
-                    self.respond(200, manager.overview(request["start_date"], request["end_date"], request["symbols"]))
+                    include_pcf = args.get("include_pcf", ["1"])[0]
+                    if include_pcf not in {"0", "1"}:
+                        raise ValueError("include_pcf 应为 0 或 1")
+                    self.respond(200, manager.overview(request["start_date"], request["end_date"], request["symbols"], include_pcf=include_pcf == "1"))
                 else:
                     path = (STATIC_DIR / ("index.html" if parsed.path == "/" else parsed.path.lstrip("/"))).resolve()
                     if not path.is_relative_to(STATIC_DIR.resolve()) or not path.is_file():
@@ -102,6 +111,10 @@ def handler_for(manager, health=None, restart_enabled=False):
                         self.respond(202, {"instance_id": instance_id, "status": "restarting"})
                     finally:
                         self.server.shutdown()
+                elif self.path == "/api/etfs/refresh":
+                    if body != {}:
+                        raise ValueError("目录刷新不接受自定义地址或参数")
+                    self.respond(202, catalogue.get(refresh=True))
                 elif self.path == "/api/source-health/check" and health is not None:
                     if body != {}:
                         raise ValueError("数据源检查不接受自定义地址或命令")
@@ -130,15 +143,26 @@ def handler_for(manager, health=None, restart_enabled=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=None, help="Port (default: first available from 8765)")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args(argv)
     manager = JobManager(args.data_dir)
     health = SourceHealth(args.data_dir)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(manager, health, restart_enabled=True))
+    ports = [args.port] if args.port is not None else range(8765, 8785)
+    for port in ports:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), handler_for(manager, health, restart_enabled=True))
+            break
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+            if args.port is not None:
+                parser.error(f"Port {port} is occupied; omit --port to choose automatically")
+    else:
+        parser.error("No available local port between 8765 and 8784")
     server.restart_requested = False
     health.start()
-    print(f"数据管理：http://127.0.0.1:{args.port} · 数据目录：{manager.data_dir}", flush=True)
+    print(f"SimTradeData UI: http://127.0.0.1:{server.server_port} · Data: {manager.data_dir}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -149,4 +173,7 @@ def main(argv=None):
             manager.cancel(manager.active)
         server.server_close()
     if server.restart_requested:
-        os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
+        arguments = [sys.executable, *sys.orig_argv[1:]]
+        if args.port is None:
+            arguments.extend(["--port", str(server.server_port)])
+        os.execv(sys.executable, arguments)

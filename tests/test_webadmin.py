@@ -11,6 +11,13 @@ from simtradedata.web.plans import build_plan, validate_request
 from simtradedata.writers.duckdb_writer import DuckDBWriter
 
 
+@pytest.fixture(autouse=True)
+def offline_etf_directory(monkeypatch):
+    monkeypatch.setattr('simtradedata.web.etf_catalogue.load_etfs', lambda: ([], []))
+    monkeypatch.setattr('simtradedata.web.etf_history.fetch_etf_daily_tencent', lambda *args: pd.DataFrame())
+    monkeypatch.setattr('simtradedata.web.etf_history.fetch_etf_daily_fallback', lambda *args: pd.DataFrame())
+
+
 def request(**kwargs):
     return {"dataset": "daily", "mode": "incremental", "start_date": "2026-11-18",
             "end_date": "2026-11-20", "symbols": [], **kwargs}
@@ -461,3 +468,153 @@ def test_quality_warning_does_not_repeat_completed_daily_download(tmp_path):
     manager = JobManager(tmp_path)
     assert manager.start(manager.preview(request(mode='auto'))['plan_id'])['status'] == 'up_to_date'
     assert not manager.list_jobs()
+
+
+def test_daily_overview_and_plan_do_not_scan_pcf_archives(tmp_path, monkeypatch):
+    from tests.ui_server import seed
+    from simtradedata.web import coverage
+    seed(tmp_path)
+    monkeypatch.setattr(coverage, 'read_pcf_archive', lambda *args: pytest.fail('Daily checks must not read PCF'))
+    result = coverage.inspect_coverage(tmp_path, '2026-11-18', '2026-11-20', include_pcf=False)
+    assert [row['key'] for row in result['datasets']] == ['daily', 'fundamentals']
+    assert result['datasets'][0]['records'] == 1
+    assert len(result['calendar_dates']) == 3
+    assert build_plan(tmp_path, request(mode='auto'))['work_pending']
+
+
+@pytest.mark.parametrize("scope", ["selected", "all"])
+def test_daily_supplements_dates_missing_inside_etf_archive(tmp_path, monkeypatch, scope):
+    import struct
+    import zipfile
+    import duckdb
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+
+    seed(tmp_path)
+    with zipfile.ZipFile(tmp_path / "downloads" / "hsjday.zip", "a") as archive:
+        archive.writestr("vipdoc/sz/lday/sz159919.day", b"".join(
+            struct.pack("<IIIIIfII", day, 1000, 1100, 900, 1050, 1050., 1000, 0)
+            for day in [20261118, 20261120]))
+    calls = []
+
+    class Fetcher:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def fetch_daily_bars(self, symbol, start, end):
+            calls.append((symbol, start, end))
+            return pd.DataFrame({"date": [start], "open": [1.], "high": [1.1],
+                                 "low": [.9], "close": [1.05], "volume": [1000], "amount": [1050.]})
+
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher', Fetcher)
+    monkeypatch.setattr('simtradedata.web.etf_listing.fetch_etf_listing_info', lambda symbol: None)
+    symbols = ['159919.SZ'] if scope == 'selected' else []
+    plan = build_plan(tmp_path, request(mode='auto', symbols=symbols))
+    result = update_daily(tmp_path, plan)
+    assert result['failed_units'] == []
+    assert calls == [('159919.SZ', '2026-11-19', '2026-11-19')]
+    with duckdb.connect(str(tmp_path / 'cn.duckdb'), read_only=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM stocks WHERE symbol='159919.SZ'").fetchone()[0] == 3
+    update_daily(tmp_path, plan)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('damage', ['zero_price', 'missing_field', 'invalid_date'])
+def test_invalid_remote_etf_does_not_abort_subsequent_security(tmp_path, monkeypatch, damage):
+    import duckdb
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+
+    seed(tmp_path)
+    calls = []
+
+    class Fetcher:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def fetch_daily_bars(self, symbol, start, end):
+            calls.append(symbol)
+            frame = pd.DataFrame({'date': pd.date_range(start, end), 'open': 1., 'high': 1.1,
+                                  'low': .9, 'close': 1.05, 'volume': 1000, 'amount': 1050.})
+            if symbol == '159919.SZ':
+                if damage == 'zero_price':
+                    frame['open'] = 0
+                elif damage == 'missing_field':
+                    frame = frame.drop(columns='high')
+                else:
+                    frame['date'] = 'invalid'
+            return frame
+
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher', Fetcher)
+    monkeypatch.setattr('simtradedata.web.etf_listing.fetch_etf_listing_info', lambda symbol: None)
+    plan = build_plan(tmp_path, request(mode='auto', symbols=['159919.SZ', '159920.SZ']))
+    result = update_daily(tmp_path, plan)
+    assert calls == ['159919.SZ', '159920.SZ']
+    assert [failure['unit'] for failure in result['failed_units']] == ['159919.SZ']
+    with duckdb.connect(str(tmp_path / 'cn.duckdb'), read_only=True) as conn:
+        assert conn.execute("SELECT DISTINCT symbol FROM stocks WHERE symbol LIKE '159%'").fetchall() == [('159920.SZ',)]
+
+
+def test_all_market_etf_supplement_does_not_treat_lof_as_etf(tmp_path, monkeypatch):
+    import struct
+    import zipfile
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    seed(tmp_path)
+    with zipfile.ZipFile(tmp_path/'downloads'/'hsjday.zip','a') as archive:
+        archive.writestr('vipdoc/sz/lday/sz160323.day', b''.join(
+            struct.pack('<IIIIIfII', day,1000,1100,900,1050,1050.,1000,0)
+            for day in [20261118,20261120]))
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher',lambda *a,**k:pytest.fail('LOF must not enter automatic ETF supplementation'))
+    result=update_daily(tmp_path,build_plan(tmp_path,request(mode='auto')))
+    assert result['failed_units']==[]
+
+
+def test_plan_augmentation_receives_normalized_optional_symbols(tmp_path):
+    manager = JobManager(tmp_path)
+    manager.etf_catalogue = Mock()
+    manager.etf_catalogue.get.return_value = {'running':True,'error':None,'warnings':[]}
+    body = request(mode='auto')
+    del body['symbols']
+    plan = manager.preview(body)
+    assert plan['request']['symbols'] == []
+    assert plan['checking_etfs'] is True
+
+
+@pytest.mark.parametrize('mode',['auto','incremental'])
+def test_missing_etf_with_incomplete_calendar_is_not_marked_complete(tmp_path,monkeypatch,mode):
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    import duckdb
+    seed(tmp_path)
+    with duckdb.connect(str(tmp_path/'cn.duckdb')) as conn:
+        conn.execute('DELETE FROM trade_days')
+        conn.execute('DELETE FROM exchange_calendar')
+    monkeypatch.setattr('simtradedata.web.operations.update_calendar',Mock(side_effect=ConnectionError('calendar unavailable')))
+    monkeypatch.setattr('scripts.download_tdx_day.get_remote_file_info',lambda *a,**k:{})
+    monkeypatch.setattr('scripts.download_tdx_day.download_file',lambda *a,**k:True)
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher',lambda *a,**k:pytest.fail('calendar unknown; must report unresolved coverage'))
+    result=update_daily(tmp_path,build_plan(tmp_path,request(mode=mode,symbols=['159919.SZ'])))
+    assert result['written']==0 and result['skipped']==0
+    assert result['failed_units']
+    assert result['failed_units'][0]['unit']=='159919.SZ'
+
+
+def test_etf_plan_cannot_claim_complete_when_calendar_is_incomplete(tmp_path):
+    import duckdb
+    from tests.ui_server import seed
+    seed(tmp_path)
+    with duckdb.connect(str(tmp_path/'cn.duckdb')) as conn:
+        conn.execute("DELETE FROM exchange_calendar WHERE date='2026-11-18'")
+    manager=JobManager(tmp_path)
+    manager.etf_catalogue=Mock()
+    manager.etf_catalogue.get.return_value={'running':False,'error':None,'warnings':[],
+        'etfs':[{'symbol':'159919.SZ'}]}
+    result=manager._include_etfs(request(mode='auto'),{'work_pending':False,'status':'up_to_date'})
+    assert result['work_pending'] and result['needs_calendar'] and result['status']=='ready'

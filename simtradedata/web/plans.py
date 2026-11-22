@@ -50,7 +50,7 @@ def validate_request(body):
 
 def build_plan(data_dir: Path, body):
     request = validate_request(body)
-    coverage = inspect_coverage(data_dir, request["start_date"], request["end_date"], request["symbols"])
+    coverage = inspect_coverage(data_dir, request["start_date"], request["end_date"], request["symbols"], include_pcf=request["dataset"] == "pcf")
     dataset = request["dataset"]
     if dataset == "calendar":
         done = request["mode"] == "auto" and calendar_covers(data_dir, request["start_date"], request["end_date"])
@@ -125,6 +125,8 @@ def build_plan(data_dir: Path, body):
     update_summary = {"quality_issues": item.get("invalid_records", 0), "pending_units": len(units) if dataset != "pcf" or not needs_calendar else None,
                       "reuse_units": reuse_units, "download_units": None if request["mode"] == "repair" else len(units) - reuse_units,
                       "unit_label": "个证券" if request["mode"] == "repair" else "季度" if dataset == "fundamentals" else "份清单" if dataset == "pcf" else "历史包"}
+    if dataset == "daily":
+        update_summary["not_applicable_records"] = item.get("not_applicable_records", 0)
     return {"update_summary": update_summary, "request": request, "units": units, "unit_count": len(units), "existing_records": item["records"],
             "work_pending": not done, "status": "up_to_date" if done else "ready",
             "cached_files": local_files, "needs_calendar": dataset == "pcf" and needs_calendar,

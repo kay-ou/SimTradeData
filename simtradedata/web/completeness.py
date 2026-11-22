@@ -14,6 +14,21 @@ INVALID_DAILY = (
 )
 
 
+
+def daily_quality_condition(conn):
+    tables = {row[0] for row in conn.execute('SHOW TABLES').fetchall()}
+    if 'stock_metadata' not in tables:
+        return f'({INVALID_DAILY})'
+    columns = {row[0] for row in conn.execute('DESCRIBE stock_metadata').fetchall()}
+    if not {'listing_status', 'de_listed_date', 'security_type'} <= columns:
+        return f'({INVALID_DAILY})'
+    empty = ' AND '.join(f's.{field} IS NULL' for field in ['open', 'high', 'low', 'close', 'volume', 'money'])
+    return f"""({INVALID_DAILY}) AND NOT (({empty}) AND EXISTS (
+        SELECT 1 FROM stock_metadata m WHERE m.symbol=s.symbol
+        AND m.listing_status='0' AND m.security_type IN ('stock','index')
+        AND TRY_CAST(m.de_listed_date AS DATE) IS NOT NULL
+        AND s.date>=TRY_CAST(m.de_listed_date AS DATE)))"""
+
 def calendar_covers(data_dir, start, end):
     database = data_dir / "cn.duckdb"
     if not database.exists():
@@ -119,8 +134,10 @@ def daily_database_pending(data_dir, request, coverage, gap=None):
         if request['symbols']:
             where += ' AND s.symbol IN (' + ','.join('?' for _ in request['symbols']) + ')'
             params.extend(request['symbols'])
-        invalid = conn.execute(f'SELECT COUNT(*), MIN(s.date), MAX(s.date) FROM stocks s WHERE {where} AND ({INVALID_DAILY})', params).fetchone()
+        quality = daily_quality_condition(conn)
+        invalid = conn.execute(f'SELECT COUNT(*) FILTER (WHERE {quality}), MIN(CASE WHEN {quality} THEN s.date END), MAX(CASE WHEN {quality} THEN s.date END), COUNT(*) FILTER (WHERE NOT ({quality})) FROM stocks s WHERE {where} AND ({INVALID_DAILY})', params).fetchone()
     item['invalid_records'] = invalid[0]
+    item['not_applicable_records'] = invalid[3]
     item['invalid_start_date'] = str(invalid[1]) if invalid[1] else None
     item['invalid_end_date'] = str(invalid[2]) if invalid[2] else None
     # Field quality is a separate diagnostic; the current source may omit these rows.

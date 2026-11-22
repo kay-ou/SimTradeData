@@ -92,6 +92,7 @@ def update_daily(data_dir, plan):
     from scripts.download_tdx_day import DOWNLOAD_URL, download_file, get_remote_file_info, needs_update
     from scripts.import_tdx_day import TdxDayImporter, filename_to_ptrade_code, is_stock_code, iter_day_files_from_zip, parse_tdx_day_file
     from simtradedata.utils.code_utils import is_etf_code
+    from simtradedata.web.daily_categories import is_exchange_etf
     from simtradedata.validators.data_validator import MarketDataValidator
 
     request = plan["request"]
@@ -122,34 +123,200 @@ def update_daily(data_dir, plan):
                 raise ConnectionError("日线历史包下载失败")
     if not cache.exists():
         raise ValueError("没有可用日线缓存")
+    calendar_complete = calendar_covers(data_dir, request["start_date"], request["end_date"])
     wanted = set(request["symbols"]) or None
     with zipfile.ZipFile(cache) as archive:
-        total = sum(1 for name in archive.namelist()
-                    if "/lday/" in name.replace("\\", "/") and name.endswith(".day")
-                    and is_stock_code(name.replace("\\", "/").split("/")[-1])
-                    and (wanted is None or filename_to_ptrade_code(name.replace("\\", "/").split("/")[-1]) in wanted))
+        available = {filename_to_ptrade_code(name.replace("\\", "/").split("/")[-1])
+                     for name in archive.namelist()
+                     if "/lday/" in name.replace("\\", "/") and name.endswith(".day")
+                     and is_stock_code(name.replace("\\", "/").split("/")[-1])}
+    failures, not_trading = [], []
+    etf_candidates = {symbol for symbol in (wanted or available) if is_exchange_etf(symbol)}
+    if wanted is None and request["mode"] != "reparse":
+        from simtradedata.web.etf_catalogue import load_etfs
+        emit(stage="download", message="自动发现沪深ETF，检查历史包遗漏", completed=0, total=None)
+        try:
+            etfs, warnings = load_etfs()
+            etf_candidates.update(row["symbol"] for row in etfs)
+            missing = etf_candidates - available
+            failures.extend({"unit": "ETF目录", "detail": warning.split("：")[0] + "；未核验新增ETF，已有历史保留。", "technical_detail": warning} for warning in warnings)
+        except Exception as error:
+            missing = set()
+            failures.append({"unit": "ETF目录", "detail": str(error)})
+    else:
+        missing = wanted - available if wanted else set()
+    if missing and request["mode"] == "reparse":
+        raise ValueError("本地历史包未包含这些证券，离线重解析无法获取：" + ", ".join(sorted(missing)))
+    total = len(wanted if wanted else available | missing)
     if not total:
         raise ValueError("历史包中没有所选证券")
+
+    def validate_frame(symbol, frame):
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame = frame[frame["date"].between(request["start_date"], request["end_date"])]
+        if not frame.empty:
+            values = frame[["open", "high", "low", "close", "volume", "money"]]
+            if values.isna().any().any() or (values[["open", "high", "low", "close"]] <= 0).any().any():
+                raise ValueError(f"{symbol} 日线包含缺失值或无效价格")
+            MarketDataValidator.validate(frame.set_index("date"), symbol, strict=True)
+            if (values["high"] < values[["open", "close", "low"]].max(axis=1)).any() or (values["low"] > values[["open", "close", "high"]].min(axis=1)).any():
+                raise ValueError(f"{symbol} 日线高低价不一致")
+        return frame
+
+    def source_frames():
+        for filename, content in iter_day_files_from_zip(cache, wanted):
+            if is_stock_code(filename):
+                symbol = filename_to_ptrade_code(filename)
+                yield symbol, parse_tdx_day_file(content, price_divisor=1000 if is_etf_code(symbol) else 100)
+        supplement = missing | etf_candidates if request["mode"] != "reparse" else set()
+        if supplement:
+            from simtradedata.fetchers.mootdx_fetcher import MootdxFetcher
+            from simtradedata.web.etf_catalogue import daily_etf_gaps
+            from simtradedata.web.etf_listing import EtfNotTradingInRange
+            import requests
+            ranges = {symbol: (request["start_date"], request["end_date"]) for symbol in missing}
+            unverified = set()
+            if request["mode"] in {"auto", "incremental"}:
+                if calendar_complete:
+                    ranges = daily_etf_gaps(importer.writer.conn, sorted(missing), request["start_date"], request["end_date"])
+                else:
+                    ranges = {}
+                    unverified = missing
+                    failures.extend({"unit": symbol, "detail": "交易日历覆盖不完整，无法确认ETF历史缺口；请先同步交易日历。"}
+                                    for symbol in sorted(unverified))
+            archived_etfs = etf_candidates & available
+            if calendar_complete:
+                ranges.update(daily_etf_gaps(importer.writer.conn, sorted(archived_etfs), request["start_date"], request["end_date"]))
+            elif archived_etfs:
+                failures.append({"unit": "交易日历", "detail": "交易日历覆盖不完整，无法确认ETF历史缺口；请先同步交易日历。"})
+            skipped.update(missing - ranges.keys() - unverified)
+            for symbol in sorted(skipped | unverified):
+                yield symbol, pd.DataFrame()
+            if ranges:
+                from contextlib import ExitStack
+                from simtradedata.web.etf_listing import fetch_etf_listing_info
+                with ExitStack() as connections:
+                    fetcher = None
+                    fallback_failures = {"tencent": 0, "eastmoney": 0}
+                    for symbol, (start, end) in sorted(ranges.items()):
+                        emit(stage="download", message=f"历史包缺少 {symbol}，通过通达信补齐 {start} 至 {end}",
+                             completed=processed, total=total)
+                        try:
+                            from simtradedata.web.daily_categories import is_exchange_etf, ETF_SHARE_CLASSES
+                            from simtradedata.web.etf_history import fetch_etf_daily_fallback, fetch_etf_daily_tencent
+                            if symbol in ETF_SHARE_CLASSES:
+                                raise EtfNotTradingInRange({
+                                    'symbol':symbol, 'name':'汇添富收益快钱货币B', 'state':'share_class',
+                                    'listed_date':None, 'trading_symbol':ETF_SHARE_CLASSES[symbol],
+                                    'source_url':'https://fund.eastmoney.com/gonggao/159005,AN202610081830215637.html',
+                                    'detail':f"B类份额不使用独立交易代码；交易行情请使用 {ETF_SHARE_CLASSES[symbol]}",
+                                })
+                            info = None
+                            if is_exchange_etf(symbol):
+                                try:
+                                    info = fetch_etf_listing_info(symbol)
+                                except (requests.RequestException, ValueError):
+                                    info = None
+                                if info and (info['state'] in {'pre_listing', 'not_established'} or
+                                             (info.get('listed_date') and end < info['listed_date'])):
+                                    raise EtfNotTradingInRange(info)
+                            if info and info.get('listed_date'):
+                                start = max(start, info['listed_date'])
+                            gap_dates = daily_etf_gaps(importer.writer.conn, [symbol], start, end, include_dates=True).get(symbol, [])
+                            # Refresh of an ETF absent from the archive still fetches the requested range.
+                            missing_only = request["mode"] in {"auto", "incremental"} or symbol in archived_etfs
+                            source_errors = {}
+
+                            def matching_rows(data):
+                                if data is None or data.empty:
+                                    return pd.DataFrame()
+                                data = validate_frame(symbol, data.rename(columns={"amount": "money"}))
+                                return data[data["date"].isin(pd.to_datetime(gap_dates))] if missing_only else data
+
+                            try:
+                                if fetcher is None:
+                                    fetcher = connections.enter_context(MootdxFetcher())
+                                frame = matching_rows(fetcher.fetch_daily_bars(symbol, start, end))
+                            except Exception as error:
+                                if not is_exchange_etf(symbol):
+                                    raise
+                                source_errors["mootdx"] = str(error)
+                                frame = pd.DataFrame()
+                            if frame.empty and "mootdx" not in source_errors:
+                                source_errors["mootdx"] = "No records matched the missing dates"
+                            providers = [("tencent", fetch_etf_daily_tencent), ("eastmoney", fetch_etf_daily_fallback)]
+                            outstanding = set(gap_dates) - set(frame['date'].dt.strftime('%Y-%m-%d')) if not frame.empty else set(gap_dates)
+                            if (frame.empty or (missing_only and outstanding)) and is_exchange_etf(symbol):
+                                for provider, load in providers:
+                                    if fallback_failures[provider] >= 3:
+                                        source_errors[provider] = "Skipped after repeated connection failures in this task"
+                                        continue
+                                    emit(stage="download", message=f"通过 {provider} 补齐 {symbol} 的缺失日期",
+                                         completed=processed, total=total)
+                                    try:
+                                        first, last = (min(outstanding), max(outstanding)) if missing_only and outstanding else (start, end)
+                                        extra = matching_rows(load(symbol, first, last))
+                                        fallback_failures[provider] = 0
+                                        if extra.empty:
+                                            source_errors[provider] = "No records matched the missing dates"
+                                        if not extra.empty:
+                                            if missing_only:
+                                                extra = extra[extra['date'].dt.strftime('%Y-%m-%d').isin(outstanding)]
+                                            frame = pd.concat([frame, extra], ignore_index=True).sort_values('date')
+                                            outstanding -= set(extra['date'].dt.strftime('%Y-%m-%d'))
+                                            if not missing_only or not outstanding:
+                                                break
+                                    except (requests.RequestException, ConnectionError, TimeoutError) as error:
+                                        fallback_failures[provider] += 1
+                                        source_errors[provider] = str(error)
+                                        if fallback_failures[provider] == 3:
+                                            print(f"{provider}: repeated connection failures; skipping this source for the rest of this task", flush=True)
+                                    except EtfNotTradingInRange:
+                                        raise
+                                    except ValueError as error:
+                                        source_errors[provider] = str(error)
+                            if frame.empty:
+                                failures.append({"unit": symbol,
+                                    "detail": "缺口日期尚未取得有效数据，请核验交易状态或稍后重试来源。",
+                                    "missing_dates": gap_dates, "source_errors": source_errors})
+                                yield symbol, frame
+                                continue
+                            if missing_only:
+                                remaining = sorted(set(gap_dates) - set(frame['date'].dt.strftime('%Y-%m-%d')))
+                                if remaining:
+                                    failures.append({"unit": symbol,
+                                        "detail": "部分缺口日期尚未取得有效数据；已获取并通过校验的数据已保存。",
+                                        "missing_dates": remaining, "source_errors": source_errors})
+                            yield symbol, frame
+                        except EtfNotTradingInRange as error:
+                            not_trading.append(error.info)
+                            skipped.add(symbol)
+                            if error.info.get('listed_date'):
+                                importer.writer.conn.execute(
+                                    "INSERT INTO stock_metadata(symbol,stock_name,listed_date) VALUES (?,?,?) "
+                                    "ON CONFLICT(symbol) DO UPDATE SET stock_name=coalesce(stock_metadata.stock_name,excluded.stock_name),"
+                                    "listed_date=coalesce(stock_metadata.listed_date,excluded.listed_date)",
+                                    [symbol,error.info['name'],error.info['listed_date']],
+                                )
+                            emit(stage="write", message=f"{symbol} · {error.info['detail']}，无需下载上市前行情",
+                                 completed=processed, total=total)
+                            yield symbol, pd.DataFrame()
+                        except Exception as error:
+                            detail = "行情接口暂不可用，未能核验历史；可稍后只重试此证券。" if isinstance(error, requests.RequestException) else str(error)
+                            failures.append({"unit": symbol, "detail": detail, "technical_detail": str(error)})
+                            print(f"{symbol} ETF补齐失败：{error}", flush=True)
+                            yield symbol, pd.DataFrame()
+
     importer = TdxDayImporter(str(data_dir / "cn.duckdb"), full_import=request["mode"] not in {"auto", "incremental"})
     processed, source_rows = 0, 0
-    found = set()
+    found, skipped = set(), set()
     try:
-        for filename, content in iter_day_files_from_zip(cache, wanted):
-            if not is_stock_code(filename):
-                continue
-            symbol = filename_to_ptrade_code(filename)
+        for symbol, frame in source_frames():
+            first_source = symbol not in found
             found.add(symbol)
-            frame = parse_tdx_day_file(content, price_divisor=1000 if is_etf_code(symbol) else 100)
             if not frame.empty:
-                frame["date"] = pd.to_datetime(frame["date"])
-                frame = frame[frame["date"].between(request["start_date"], request["end_date"])]
+                frame = validate_frame(symbol, frame)
                 if not frame.empty:
-                    values = frame[["open", "high", "low", "close", "volume", "money"]]
-                    if values.isna().any().any() or (values[["open", "high", "low", "close"]] <= 0).any().any():
-                        raise ValueError(f"{symbol} 日线包含缺失值或无效价格")
-                    MarketDataValidator.validate(frame.set_index("date"), symbol, strict=True)
-                    if (values["high"] < values[["open", "close", "low"]].max(axis=1)).any() or (values["low"] > values[["open", "close", "high"]].min(axis=1)).any():
-                        raise ValueError(f"{symbol} 日线高低价不一致")
                     source_rows += len(frame)
                     importer.import_stock(symbol, frame)
                     if request["mode"] == "auto":
@@ -160,15 +327,15 @@ def update_daily(data_dir, plan):
                         repair = frame[frame["date"].isin([pd.Timestamp(row[0]) for row in invalid])]
                         if not repair.empty:
                             importer.stats["records_imported"] += importer.writer.write_market_data(symbol, repair.set_index("date"))
-            processed += 1
+            processed += int(first_source)
             if processed == total or processed % 50 == 0 or wanted:
                 emit(stage="write", message=f"处理 {symbol}", completed=processed, total=total,
                      written=importer.stats["records_imported"])
         if wanted and wanted - found:
             raise ValueError("历史包未包含这些证券：" + ", ".join(sorted(wanted - found)))
-        if not source_rows:
+        if not source_rows and not skipped and not failures:
             raise ValueError("所选日期没有源记录，未填造停牌或缺失行情")
-        return {"written": importer.stats["records_imported"], "source_rows": source_rows, "failed_units": []}
+        return {"written": importer.stats["records_imported"], "source_rows": source_rows, "skipped": len(skipped), "not_trading": not_trading, "failed_units": failures}
     finally:
         importer.writer.close()
 

@@ -26,7 +26,8 @@ def now():
 
 def summary(coverage):
     return [{"key": row["key"], "records": row["records"], "securities": row["securities"],
-             "missing_dates": len(row["missing_dates"]), "null_fields": row["null_fields"]}
+             "missing_dates": len(row["missing_dates"]), "null_fields": row["null_fields"],
+             **({"categories": [{**category, "missing_dates": len(category["missing_dates"])} for category in row["categories"]]} if "categories" in row else {})}
             for row in coverage["datasets"]]
 
 
@@ -41,6 +42,7 @@ class JobManager:
         self.plans = {}
         self.cache = {}
         self.jobs = []
+        self.etf_catalogue = None
         migrate_financial_markers(self.data_dir)
         for path in [self.data_dir / "calendar_ranges.json", self.data_dir / "downloads" / "completed_scopes.json", self.data_dir / "downloads" / "hsjday.inventory.json"]:
             path.unlink(missing_ok=True)
@@ -52,8 +54,10 @@ class JobManager:
             if not any(old.iterdir()):
                 old.rmdir()
 
-    def overview(self, start, end, symbols=None):
+    def overview(self, start, end, symbols=None, include_pcf=True):
         key = (start, end, tuple(symbols or []))
+        if not include_pcf:
+            key += (False,)
         with self.lock:
             if self.active:
                 value = self.cache.get(key)
@@ -64,17 +68,46 @@ class JobManager:
             cached = self.cache.get(key)
             if cached and time.monotonic() - cached[0] < 10:
                 return cached[1]
-            data = inspect_coverage(self.data_dir, start, end, symbols)
+            data = inspect_coverage(self.data_dir, start, end, symbols, include_pcf=include_pcf)
             self.cache[key] = (time.monotonic(), data)
             if len(self.cache) > 30:
                 self.cache.pop(next(iter(self.cache)))
             return data
+
+    def _include_etfs(self, request, result, start=None):
+        if self.etf_catalogue is None or request["dataset"] != "daily" or request["symbols"] or request["mode"] != "auto":
+            return result
+        catalogue = self.etf_catalogue.get()
+        if catalogue['running'] or catalogue['error'] or catalogue['warnings']:
+            if start is not None:
+                request['start_date'] = start
+            result.update(work_pending=True, status='ready', checking_etfs=catalogue['running'])
+            return result
+        from simtradedata.web.etf_catalogue import daily_etf_gaps
+        import duckdb
+        database = self.data_dir / 'cn.duckdb'
+        if not database.exists():
+            return result
+        candidates = [row['symbol'] for row in catalogue['etfs'] if row.get('local_daily') or row.get('listing_info', {}).get('state') not in {'pre_listing','not_established'}]
+        from simtradedata.web.completeness import calendar_covers
+        if candidates and not calendar_covers(self.data_dir, request['start_date'], request['end_date']):
+            result.update(work_pending=True, status='ready', needs_calendar=True)
+            return result
+        with duckdb.connect(str(database), read_only=True) as conn:
+            gaps = daily_etf_gaps(conn, candidates, start or request['start_date'], request['end_date'])
+        if gaps:
+            result.update(work_pending=True, status='ready')
+            result.setdefault('update_summary', {})['pending_etfs'] = len(gaps)
+            if start is not None:
+                request['start_date'] = min(request['start_date'], min(first for first, _ in gaps.values()))
+        return result
 
     def preview(self, request):
         with self.lock:
             if self.active:
                 raise RuntimeError("已有更新任务运行，请完成或取消后再创建任务")
             plan = build_plan(self.data_dir, request)
+            plan = self._include_etfs(plan["request"], plan)
             plan_id = uuid.uuid4().hex
             self.plans = {key: value for key, value in self.plans.items() if time.monotonic() - value[0] < 600}
             self.plans[plan_id] = (time.monotonic(), plan)
@@ -86,7 +119,8 @@ class JobManager:
         with self.lock:
             if self.active:
                 raise RuntimeError("更新任务运行中，完成后自动检测下一段缺口")
-            return recommend(self.data_dir, dataset, symbols)
+            result = recommend(self.data_dir, dataset, symbols)
+            return self._include_etfs(result['request'], result, result['scope_start'])
 
     def start(self, plan_id):
         with self.lock:
@@ -97,7 +131,7 @@ class JobManager:
             cached = self.plans.pop(plan_id, None)
             if not cached or time.monotonic() - cached[0] > 600:
                 raise ValueError("更新预览已过期，请重新预览")
-            plan = build_plan(self.data_dir, cached[1]["request"])
+            plan = self._include_etfs(cached[1]["request"], build_plan(self.data_dir, cached[1]["request"]))
             if not plan.get("work_pending", True):
                 return {"status": "up_to_date", "message": "当前范围已同步，无需重复更新"}
             job_id = uuid.uuid4().hex
@@ -153,11 +187,19 @@ class JobManager:
                 job.update(ended_at=now(), exit_code=code)
                 try:
                     request = job["request"]
-                    job["after"] = summary(inspect_coverage(self.data_dir, request["start_date"], request["end_date"], request["symbols"]))
+                    job["after"] = summary(inspect_coverage(self.data_dir, request["start_date"], request["end_date"], request["symbols"], include_pcf=request["dataset"] == "pcf"))
                 except Exception as error:
                     job["logs"].append(f"更新后覆盖检查失败：{error}")
                     if job["status"] == "completed":
                         job["status"] = "failed"
+                if job['status'] == 'completed':
+                    job['message'] = '更新已完成，已有有效数据保留。'
+                elif job['status'] == 'failed':
+                    job['message'] = '更新已结束，部分单元仍需核验。'
+                elif job['status'] == 'cancelled':
+                    job['message'] = '更新已取消，已保存的数据保留。'
+                if self.etf_catalogue is not None:
+                    self.etf_catalogue.mark_not_trading(job.get('result', {}).get('not_trading', []))
                 self.active, self.process = None, None
                 self.cache.clear()
         except Exception as error:

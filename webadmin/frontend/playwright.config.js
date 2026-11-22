@@ -7,6 +7,7 @@ export default defineConfig({
   outputDir: process.env.UI_TEST_ARTIFACTS_DIR || '/tmp/simtrade-ui-test-results',
   use: {
     baseURL: 'http://127.0.0.1:18765',
+    locale: 'zh-CN',
     viewport: { width: 1440, height: 1000 },
     launchOptions: process.env.UI_CHROMIUM_EXECUTABLE ? { executablePath: process.env.UI_CHROMIUM_EXECUTABLE } : {},
   },

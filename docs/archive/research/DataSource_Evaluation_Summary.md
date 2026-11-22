@@ -1,5 +1,7 @@
 # 数据源能力评估总结
 
+> 历史归档：本文描述当时的研究或测试结论，不作为当前实现与覆盖承诺。现行说明见[数据覆盖](../../PTRADE_DATA_COVERAGE.md)，操作入口见[文档导航](../../README.md)。
+
 **文档类型**: 早期研究归档
 **创建时间**: 2024-07-24
 **最后更新**: 2025-09-30
@@ -147,7 +149,7 @@
 
 ### 归档文档（参考用）
 - 本文档 - 早期研究结论
-- [Financial_DataSource_Capability_Analysis.md](./Financial_DataSource_Capability_Analysis.md) - 基于AkShare的分析（已过时）
+- Financial_DataSource_Capability_Analysis.md（原引用文件未保留：`./Financial_DataSource_Capability_Analysis.md`） - 基于AkShare的分析（已过时）
 
 ---
 

@@ -63,3 +63,24 @@ def test_dependency_failure_reports_live_checks_skipped_and_fails_ci(tmp_path):
     assert process.returncode == 1 and not summary['ok']
     assert len(calls) == 1
     assert all(stage['status'] == 'skipped' for stage in summary['results'][1:])
+
+
+
+@pytest.mark.parametrize("arguments,expected_calls", [
+    (("--offline",), 8),
+    (("--python", "3.10", "--offline"), 4),
+    (("--python", "3.12", "--offline"), 4),
+])
+def test_offline_ci_runs_all_code_checks_without_live_probes(tmp_path, arguments, expected_calls):
+    process, summary, calls = run_ci(tmp_path, arguments=arguments)
+    assert process.returncode == 0 and summary["ok"]
+    assert len(calls) == expected_calls
+    assert not any("python" in call and "-m" in call for call in calls)
+    assert {stage["stage"] for stage in summary["results"]} == {"dependencies", "lint", "tests", "build"}
+    assert all("--disable-socket" in call for call in calls if "pytest" in call)
+
+
+@pytest.mark.parametrize("failed_stage", ["sync", "ruff", "pytest", "build"])
+def test_offline_ci_still_fails_for_broken_code_checks(tmp_path, failed_stage):
+    process, summary, _ = run_ci(tmp_path, failed_stage, ("--python", "3.12", "--offline"))
+    assert process.returncode == 1 and not summary["ok"]

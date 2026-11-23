@@ -8,11 +8,13 @@ const { values } = parseArgs({
   options: {
     python: { type: "string", multiple: true },
     help: { type: "boolean" },
+    offline: { type: "boolean", default: false },
   },
 });
 if (values.help) {
-  console.log("npm run ci:full [-- --python 3.10 --python 3.12]");
+  console.log("npm run ci:full [-- --python 3.10 --python 3.12] [--offline]");
   console.log("Default: both Python versions; dependencies, lint, offline tests, build, then live data-source health checks once.");
+  console.log("--offline: run dependencies, lint, offline tests and build; live probes remain available in the default full run.");
   process.exit(0);
 }
 
@@ -47,7 +49,7 @@ for (const version of versions) {
     ["build", ["build", "--no-sources", "--python", version,
       "--out-dir", join(root, "dist", "ci", `python-${version}`)]],
   ];
-  if (version === versions.at(-1)) {
+  if (!values.offline && version === versions.at(-1)) {
     stages.push(
       ["health:data-sources", [...run, "python", "-m", "scripts.check_data_sources",
         "--timeout", "90", "--attempts", "2", "--json-output", join(reportDir, "data-sources.json")]],

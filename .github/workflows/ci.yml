@@ -59,8 +59,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Full CI
-        run: npm run ci:full -- --python ${{ matrix.python-version }}
+      - name: Offline CI
+        run: npm run ci:full -- --python ${{ matrix.python-version }} --offline
       - name: Save test reports
         if: always()
         uses: actions/upload-artifact@v4

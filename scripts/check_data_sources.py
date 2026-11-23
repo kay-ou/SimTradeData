@@ -21,8 +21,9 @@ SOURCES = {
     "eastmoney": ("cn", "600000.SS"),
     "baostock": ("cn", "600000.SS"),
     "yfinance": ("us", "AAPL.US"),
+    "tdx_package": ("cn", "600000.SS"),
 }
-DEFAULT_SOURCES = ["mootdx", "eastmoney", "baostock", "yfinance"]
+DEFAULT_SOURCES = ["mootdx", "eastmoney", "baostock", "yfinance", "tdx_package"]
 CALENDARS = {"cn": "XSHG", "us": "XNYS"}
 # Allow CN end-of-day processing and US daily-bar publication to finish.
 UPDATE_GRACE_HOURS = {"cn": 6, "us": 2}
@@ -115,6 +116,25 @@ def probe(source: str, expected: str | None, end: str) -> dict:
     start = (pd.Timestamp(end) - pd.Timedelta(days=35)).strftime("%Y-%m-%d")
     started = time.monotonic()
     try:
+        if source == 'tdx_package':
+            from simtradedata.fetchers.tdx_daily_package import fetch_daily_package
+            if not expected:
+                raise ValueError('Trading calendar unavailable for daily package verification')
+            frame = fetch_daily_package(expected).rename(columns={'money':'amount'})
+            samples = []
+            today = (pd.Timestamp(end) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+            for code in [symbol, '159919.SZ', '510300.SS']:
+                data = frame[frame['symbol'] == code]
+                sample = validate_bars(data, expected, today)
+                active = data['volume'] > 0
+                if sample['status'] == 'ok' and active.any():
+                    average = data.loc[active,'amount'] / data.loc[active,'volume']
+                    if not average.between(data.loc[active,'low'] * .99, data.loc[active,'high'] * 1.01).all():
+                        sample = {'status':'invalid_data', 'detail':'Daily package price/volume/amount units disagree'}
+                samples.append({'symbol':code, **sample})
+            failed = next((sample for sample in samples if sample['status'] != 'ok'), None)
+            result = {**(failed or samples[0]), 'samples':samples}
+            return _source_report(source, expected, result, started)
         # One source only: the production adapters run without fallback.
         with SmartRouter(config={"daily_bars": {market: [source]}}) as router:
             df = router.get_daily_bars(symbol, start, end)

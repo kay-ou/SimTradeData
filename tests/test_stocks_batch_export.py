@@ -83,6 +83,7 @@ SELECT
     wl.date::TIMESTAMP_NS AS date,
     wl.open, wl.close, wl.high, wl.low,
     CASE
+        WHEN wl.stored_preclose > 0 THEN wl.stored_preclose
         WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
              AND wl.volume > 0 THEN
             ROUND(
@@ -129,7 +130,7 @@ def _seed(conn):
         ('600000.SS', '2025-01-06', 8.0, 8.5, 8.6, 7.9, 7.8, 2000, 17000.0),
         ('600000.SS', '2025-01-07', 8.6, 9.0, 9.1, 8.5, 8.5, 2100, 18900.0),
         ('600000.SS', '2025-01-08', 9.1, 9.2, 9.3, 9.0, 9.0, 2050, 18900.0),
-        ('600000.SS', '2025-01-09', 9.2, 9.4, 9.5, 9.1, 9.2, 2200, 20700.0),
+        ('600000.SS', '2025-01-09', 9.2, 9.4, 9.5, 9.1, 4.6, 2200, 20700.0),
         ('600000.SS', '2025-01-10', 9.4, 9.6, 9.7, 9.3, 9.4, 2300, 22100.0),
         ('000300.SS', '2025-01-06', 4000.0, 4010.0, 4015.0, 3995.0, 3990.0, 0, 0.0),
         ('000300.SS', '2025-01-07', 4010.0, 4020.0, 4025.0, 4005.0, 4010.0, 0, 0.0)
@@ -138,6 +139,7 @@ def _seed(conn):
         INSERT INTO exrights (symbol, date, allotted_ps, rationed_ps, rationed_px, bonus_ps)
         VALUES ('600000.SS', '2025-01-09', 1.0, 0.0, 0.0, 0.0)
     """)
+    conn.execute("INSERT INTO stock_status(status_type,date,symbols) VALUES ('HALT','2025-01-08','[\"000001.SZ\"]')")
     # security_type present -> official-first filter branch (LIKE %.SZ/%.SS + type '1')
     conn.execute("""
         INSERT INTO stock_metadata (symbol, security_type) VALUES
@@ -218,6 +220,27 @@ class TestStocksBatchExport:
         sus = df2[df2["date"] == "2025-01-08"].iloc[0]
         assert sus["close"] == 21.0
         assert sus["volume"] == 0
+
+    def test_unverified_gap_is_not_synthesized(self, tmp_path):
+        self.writer.conn.execute('DELETE FROM stock_status')
+        self.writer._export_stocks_batch(tmp_path)
+        frame = pd.read_parquet(tmp_path / '000001.SZ.parquet')
+        assert '2025-01-08' not in frame['date'].dt.strftime('%Y-%m-%d').tolist()
+
+    def test_etfs_export_with_stored_limits_and_prices(self, tmp_path):
+        self.writer.conn.execute("INSERT INTO stock_metadata(symbol,security_type) VALUES ('159919.SZ','etf')")
+        self.writer.conn.execute("INSERT INTO stocks(symbol,date,open,close,high,low,volume,money,high_limit,low_limit) VALUES ('159919.SZ','2025-01-06',1.234,1.235,1.24,1.23,100,123.5,1.4,1.1)")
+        self.writer._export_stocks_batch(tmp_path)
+        row = pd.read_parquet(tmp_path / '159919.SZ.parquet').iloc[0]
+        assert row['close'] == 1.235 and row['high_limit'] == 1.4 and row['low_limit'] == 1.1
+
+    def test_export_preserves_source_preclose_and_limits(self, tmp_path):
+        self.writer.conn.execute("UPDATE stocks SET high_limit=9.99,low_limit=7.77 WHERE symbol='600000.SS' AND date='2025-01-06'")
+        self.writer._export_stocks_batch(tmp_path)
+        stock = pd.read_parquet(tmp_path / '600000.SS.parquet').iloc[0]
+        assert stock['high_limit'] == 9.99 and stock['low_limit'] == 7.77
+        other = pd.read_parquet(tmp_path / '000002.SZ.parquet').set_index('date')
+        assert other.loc['2025-01-09','preclose'] == 21.1
 
     def test_exrights_adjusts_preclose(self, exported):
         # 600000.SS: exrights on 01-09, allotted_ps=1.0. The event lands in

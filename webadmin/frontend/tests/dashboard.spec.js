@@ -26,7 +26,7 @@ test('one smart button fills gaps from cache and verifies the result', async ({ 
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page).toHaveTitle('SimTradeData · 数据管理');
-  await expect(page.getByRole('heading', { name: '更新你的回测数据' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '准备回测数据' })).toBeVisible();
   await expect(page.getByLabel('更新方式')).not.toBeVisible();
   await expect(page.getByLabel('自动检查结果')).toContainText('待补齐');
   await expect(page.locator('.automatic-range')).toContainText('2026-11-18 至 2026-11-20');

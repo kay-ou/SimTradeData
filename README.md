@@ -1,4 +1,4 @@
-English | [中文](README_zh.md) | [Deutsch](README_de.md)
+English | [Chinese](README_zh.md) | [German](README_de.md)
 
 # SimTradeData
 
@@ -10,7 +10,7 @@ English | [中文](README_zh.md) | [Deutsch](README_de.md)
 [![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
 [![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
 
-Download local backtesting data for [SimTradeLab](https://github.com/kay-ou/SimTradeLab): China A-shares, ETFs and US stocks. Store data in DuckDB and export Parquet snapshots.
+Prepare local backtesting data for [SimTradeLab](https://github.com/kay-ou/SimTradeLab) and SimTradeDesk: China stocks, ETFs and US stocks. Store data in DuckDB and export shared Parquet data packages.
 
 ## Start the web UI (recommended)
 
@@ -26,11 +26,11 @@ Open the URL printed in the terminal (starting from **http://127.0.0.1:8765**, a
 npm run ui -- --port 8767
 ```
 
-Click **更新回测数据** to update stocks and ETFs together. Valid existing records are skipped; the UI shows live progress, cancellation and retries. Stock and ETF statistics are separate. Quarterly financials and ETF PCF appear under **其他数据**.
+Click **Update backtesting data** to update stocks and ETFs together. Valid existing records are skipped; the UI shows live progress, cancellation and retries. Stock and ETF statistics are separate. Quarterly financials and ETF PCF appear under **Other data**.
 
 The default database is `data/cn.duckdb`; use `--data-dir /path/to/data` for another directory. Completion is checked against stored data; download task history is not persisted. Startup installs frontend dependencies and builds only when needed; uv synchronizes Python dependencies. The first available port from 8765 is selected automatically; use the URL printed in the terminal. Switch Chinese, English or German in the header; the browser language is used initially and your manual choice is remembered.
 
-The UI manages CN daily bars, quarterly financials, SZ historical PCF and calendars. US downloads and exports use the CLI. See the [UI guide](docs/WEB_DATA_ADMIN.md) (Chinese).
+After updating, use **Export backtest data** to generate and download CN or US Parquet packages for SimTradeLab / SimTradeDesk. Complete securities are skipped during smart updates; recent sessions can use small official daily packages instead of the historical ZIP. US downloads still use the CLI. See the [UI guide](docs/WEB_DATA_ADMIN.md) (Chinese).
 
 ## Use prebuilt data
 

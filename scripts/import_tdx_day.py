@@ -70,7 +70,7 @@ console.setLevel(logging.WARNING)
 logger.addHandler(console)
 
 
-def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFrame:
+def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0, dates=None) -> pd.DataFrame:
     """
     Parse TDX binary .day file content.
 
@@ -87,6 +87,7 @@ def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFram
     Args:
         data: Raw binary content of .day file
         price_divisor: Divisor for raw prices. 100.0 for stocks, 1000.0 for ETFs.
+        dates: Optional set of YYYYMMDD integers to parse
 
     Returns:
         DataFrame with columns: date, open, high, low, close, volume, money
@@ -99,6 +100,8 @@ def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFram
 
     for i in range(num_records):
         offset = i * RECORD_SIZE
+        if dates is not None and struct.unpack_from('<I', data, offset)[0] not in dates:
+            continue
         record = data[offset : offset + RECORD_SIZE]
 
         try:
@@ -298,7 +301,7 @@ class TdxDayImporter:
         max_date = self.writer.get_max_date("stocks", symbol)
         return min_date, max_date
 
-    def import_stock(self, symbol: str, df: pd.DataFrame) -> int:
+    def import_stock(self, symbol: str, df: pd.DataFrame, existing_range=None) -> int:
         """
         Import data for a single stock.
 
@@ -309,6 +312,7 @@ class TdxDayImporter:
         Args:
             symbol: PTrade format code
             df: DataFrame with OHLCV data
+            existing_range: Optional batch-read (min_date, max_date) for incremental imports
 
         Returns:
             Number of records imported
@@ -317,7 +321,7 @@ class TdxDayImporter:
             return 0
 
         # Check existing data range for incremental import
-        min_date, max_date = self.get_existing_date_range(symbol)
+        min_date, max_date = existing_range if existing_range is not None and not self.full_import else self.get_existing_date_range(symbol)
 
         if min_date and max_date:
             min_dt = pd.to_datetime(min_date)

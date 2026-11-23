@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import date
 from unittest.mock import Mock
 
 import pandas as pd
@@ -13,6 +14,12 @@ from simtradedata.writers.duckdb_writer import DuckDBWriter
 
 @pytest.fixture(autouse=True)
 def offline_etf_directory(monkeypatch):
+    from simtradedata.web import recommendations, plans
+    class FixtureDate(date):
+        @classmethod
+        def today(cls): return cls(2026, 11, 22)
+    monkeypatch.setattr(recommendations, 'date', FixtureDate)
+    monkeypatch.setattr(plans, 'date', FixtureDate)
     monkeypatch.setattr('simtradedata.web.etf_catalogue.load_etfs', lambda: ([], []))
     monkeypatch.setattr('simtradedata.web.etf_history.fetch_etf_daily_tencent', lambda *args: pd.DataFrame())
     monkeypatch.setattr('simtradedata.web.etf_history.fetch_etf_daily_fallback', lambda *args: pd.DataFrame())
@@ -226,11 +233,71 @@ def test_smart_daily_reuses_cache_without_network_and_never_replaces_rows(tmp_pa
     seed(tmp_path)
     monkeypatch.setattr(download_tdx_day, "get_remote_file_info", lambda *args: pytest.fail("Valid cache must avoid network"))
     monkeypatch.setattr(download_tdx_day, "download_file", lambda *args, **kwargs: pytest.fail("Must not redownload"))
+    monkeypatch.setattr('scripts.import_tdx_day.TdxDayImporter.get_existing_date_range',
+                        lambda *args: pytest.fail('Incremental updates must reuse batch-read ranges'))
     plan = build_plan(tmp_path, request(mode="auto"))
-    assert update_daily(tmp_path, plan)["written"] == 2
-    assert update_daily(tmp_path, plan)["written"] == 0
+    result = update_daily(tmp_path, plan)
+    assert result["written"] == 2
+    assert {'archive_parse', 'etf_check', 'write', 'total', 'other', 'lifecycle_request'} <= set(result['timings'])
+    assert sum(value for key, value in result['timings'].items() if key != 'total') == pytest.approx(result['timings']['total'])
+    assert all(value >= 0 for value in result['timings'].values())
+    from scripts.import_tdx_day import iter_day_files_from_zip
+    def only_pending(path, wanted):
+        assert wanted == set(), 'Complete stocks must be excluded before ZIP decompression'
+        return iter_day_files_from_zip(path, wanted)
+    monkeypatch.setattr('scripts.import_tdx_day.iter_day_files_from_zip', only_pending)
+    monkeypatch.setattr('scripts.import_tdx_day.parse_tdx_day_file',
+                        lambda *args, **kwargs: pytest.fail('Complete stocks must not be parsed'))
+    repeat = update_daily(tmp_path, plan)
+    assert repeat['written'] == 0 and repeat['skipped'] == 1
+    assert repeat['timings']['archive_parse'] == 0
     assert not (tmp_path / "downloads" / "hsjday.inventory.json").exists()
     assert build_plan(tmp_path, request(mode="auto"))["work_pending"] is False
+
+
+def test_unchanged_stale_package_is_not_downloaded_and_missing_day_stays_unresolved(tmp_path, monkeypatch):
+    import duckdb
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    seed(tmp_path)
+    update_daily(tmp_path, build_plan(tmp_path, request(mode='auto')))
+    with duckdb.connect(str(tmp_path / 'cn.duckdb')) as conn:
+        conn.execute("INSERT INTO exchange_calendar VALUES ('2026-11-21',false),('2026-11-22',false),('2026-11-23',true)")
+        conn.execute("INSERT INTO trade_days VALUES ('2026-11-23')")
+    cache = tmp_path / 'downloads' / 'hsjday.zip'
+    monkeypatch.setattr('scripts.download_tdx_day.get_remote_file_info', lambda *args:
+                        {'size': cache.stat().st_size, 'last_modified': 'Mon, 01 Jan 2024 00:00:00 GMT'})
+    monkeypatch.setattr('scripts.download_tdx_day.download_file',
+                        lambda *args, **kwargs: pytest.fail('An unchanged package must not be downloaded'))
+    result = update_daily(tmp_path, {'request': request(mode='auto', end_date='2026-11-23'),
+                                    'before': {'calendar_dates': ['2026-11-23']}})
+    assert result['written'] == 0
+    assert result['failed_units'][0]['unit'] == '600000.SS'
+    assert result['failed_units'][0]['missing_dates'] == ['2026-11-23']
+
+
+def test_remote_timestamp_detects_same_size_daily_revision(tmp_path):
+    import os
+    from scripts.download_tdx_day import needs_update
+    cache = tmp_path / 'daily.zip'
+    cache.write_bytes(b'zip')
+    os.utime(cache, (1704067200, 1704067200))  # 2024-01-01 UTC
+    assert not needs_update(cache, {'size': 3, 'last_modified': 'Mon, 01 Jan 2024 00:00:00 GMT'})
+    assert needs_update(cache, {'size': 3, 'last_modified': 'Tue, 02 Jan 2024 00:00:00 GMT'})
+
+
+def test_unknown_listing_does_not_hide_history_before_first_database_bar(tmp_path, monkeypatch):
+    import duckdb
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    seed(tmp_path)
+    with duckdb.connect(str(tmp_path / 'cn.duckdb')) as conn:
+        conn.execute("DELETE FROM stocks WHERE date='2026-11-17'")
+        conn.execute("INSERT INTO exchange_calendar VALUES ('2026-11-17',true)")
+    result = update_daily(tmp_path, build_plan(tmp_path, request(mode='auto', start_date='2026-11-17')))
+    assert result['written'] == 3
+    with duckdb.connect(str(tmp_path / 'cn.duckdb'), read_only=True) as conn:
+        assert str(conn.execute('SELECT MIN(date) FROM stocks').fetchone()[0]) == '2026-11-17'
 
 
 def test_smart_financial_reparses_old_cache_once_then_skips_it(tmp_path, monkeypatch):
@@ -299,6 +366,8 @@ def test_smart_daily_repairs_missing_values_from_cache_without_losing_other_fiel
     with duckdb.connect(str(tmp_path / "cn.duckdb")) as conn:
         conn.execute("UPDATE stocks SET money=?, high_limit=15 WHERE date='2026-11-19'", [money])
     monkeypatch.setattr(download_tdx_day, "get_remote_file_info", lambda *args: pytest.fail("Must use local cache"))
+    monkeypatch.setattr('scripts.import_tdx_day.TdxDayImporter.get_existing_date_range',
+                        lambda *args: pytest.fail('Batch-read ranges must still support field repairs'))
     plan = build_plan(tmp_path, request(mode="auto"))
     assert update_daily(tmp_path, plan)["written"] == 3
     with duckdb.connect(str(tmp_path / "cn.duckdb"), read_only=True) as conn:

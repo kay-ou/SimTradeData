@@ -41,6 +41,32 @@ def listing_date(content):
     return None
 
 
+def delisting_dates(content, symbol):
+    """Only explicit termination dates and indefinite trading suspensions."""
+    text = re.sub(r'\s+', '', content)
+    code = symbol[:6]
+    if not re.search(r'(?:基金(?:主|交易)?代码|证券代码|交易代码)[：:]?' + code + r'(?!\d)', text):
+        raise ValueError('ETF delisting announcement does not identify the requested security')
+    pattern = r'(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?'
+    dates = {date(*map(int, match)).isoformat() for match in re.findall(
+        r'终止上市(?:日期|日)[：:]?(?:为)?' + pattern, text)}
+    if len(dates) != 1:
+        return None
+    out = dates.pop()
+    halt = None
+    matches = re.findall(
+        r'自' + pattern + r'(?:日起|起|开市起)停牌[^。；;]*?'
+        r'(?:直至终止上市|至终止上市|不再复牌)', text)
+    halts = {date(*map(int, match)).isoformat() for match in matches}
+    if len(halts) > 1:
+        raise ValueError('ETF announcement contains conflicting indefinite suspension dates')
+    if halts:
+        halt = halts.pop()
+        if halt >= out:
+            raise ValueError('ETF suspension date is not before delisting')
+    return {'de_listed_date': out, 'halt_start': halt}
+
+
 @retry(config=_HTTP_RETRY)
 def fetch_etf_listing_info(symbol):
     code = symbol[:6]
@@ -72,9 +98,10 @@ def fetch_etf_listing_info(symbol):
             return {**base, 'state': 'not_established', 'listed_date': None,
                     'source_url': f"https://fund.eastmoney.com/gonggao/{code},{notice['ID']}.html",
                     'detail': '公告显示募集未成功，未形成上市交易历史'}
-        if any(term in heading for term in ['暂停','终止','取消','退市','停牌']):
+        terminal = '终止上市' in heading
+        if not terminal and any(term in heading for term in ['暂停','终止','取消','退市','停牌']):
             continue
-        if '上市交易的公告' not in heading and not heading.endswith('上市交易公告书'):
+        if not terminal and '上市交易的公告' not in heading and not heading.endswith('上市交易公告书'):
             continue
         response = requests.get('https://np-cnotice-fund.eastmoney.com/api/content/ann',
                                 params={'client_source': 'web_fund', 'show_all': 1, 'art_code': notice['ID']},
@@ -86,6 +113,14 @@ def fetch_etf_listing_info(symbol):
         content = data['data'].get('notice_content', '')
         if code not in re.sub(r'\s+', '', content):
             raise ValueError('ETF上市公告正文未匹配证券代码')
+        if terminal:
+            dates = delisting_dates(content, symbol)
+            if dates:
+                return {**base, **dates, 'listed_date': None,
+                        'state': 'delisted' if dates['de_listed_date'] <= date.today().isoformat() else 'listed',
+                        'source_url': f"https://fund.eastmoney.com/gonggao/{code},{notice['ID']}.html",
+                        'detail': f"公告确认终止上市日为 {dates['de_listed_date']}"}
+            continue
         listed = listing_date(content)
         if listed:
             return {**base, 'state': 'pre_listing' if listed > date.today().isoformat() else 'listed',
@@ -109,3 +144,47 @@ def fetch_etf_listing_info(symbol):
                         'listed_date':None, 'issuance_date':issued, 'source_url':basic_url,
                         'detail':f'发行开始日为 {issued}，尚未开始上市交易'}
     return None
+
+
+def store_delisting(writer, info):
+    """Store source-confirmed lifecycle facts, without inventing market bars."""
+    import json
+    import duckdb
+    from simtradedata.web.coverage import trading_dates
+    out = date.fromisoformat(info['de_listed_date'])
+    halt = date.fromisoformat(info['halt_start']) if info.get('halt_start') else None
+    if halt and halt >= out:
+        raise ValueError('Invalid ETF suspension interval')
+    existing = writer.conn.execute('SELECT de_listed_date FROM stock_metadata WHERE symbol=?', [info['symbol']]).fetchone()
+    if existing and existing[0] and existing[0] != out.isoformat():
+        raise ValueError('ETF delisting date conflicts with stored metadata')
+    latest = writer.conn.execute('SELECT MAX(date) FROM stocks WHERE symbol=? AND close>0', [info['symbol']]).fetchone()[0]
+    if latest and latest >= out:
+        raise ValueError('ETF delisting date conflicts with stored market bars')
+    days = trading_dates(writer.conn, halt.isoformat(), out.isoformat()) if halt else []
+    writer.begin()
+    try:
+        writer.conn.execute("""INSERT INTO stock_metadata(symbol,stock_name,de_listed_date,security_type,listing_status)
+            VALUES (?,?,?,'etf',?) ON CONFLICT(symbol) DO UPDATE SET
+            stock_name=coalesce(nullif(stock_metadata.stock_name,''),excluded.stock_name),
+            de_listed_date=excluded.de_listed_date,security_type='etf',listing_status=excluded.listing_status""",
+            [info['symbol'], info['name'] if info['name'] != info['symbol'][:6] else None,
+             out.isoformat(), '0' if out <= date.today() else '1'])
+        for day in days:
+            if day >= out.isoformat():
+                continue
+            key = day.replace('-', '')
+            row = writer.conn.execute("SELECT symbols FROM stock_status WHERE date=? AND status_type='HALT'", [key]).fetchone()
+            members = json.loads(row[0]) if row else []
+            if not isinstance(members, list):
+                raise ValueError('Invalid existing HALT members')
+            members = sorted(set(members) | {info['symbol']})
+            writer.conn.execute("""INSERT INTO stock_status VALUES (?,'HALT',?)
+                ON CONFLICT(date,status_type) DO UPDATE SET symbols=excluded.symbols""", [key,json.dumps(members)])
+        writer._record_stock_metadata_changes([info['symbol']])
+        writer.commit()
+    except duckdb.FatalException:
+        raise
+    except Exception:
+        writer.rollback()
+        raise

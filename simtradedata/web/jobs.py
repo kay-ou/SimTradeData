@@ -134,6 +134,20 @@ class JobManager:
             plan = self._include_etfs(cached[1]["request"], build_plan(self.data_dir, cached[1]["request"]))
             if not plan.get("work_pending", True):
                 return {"status": "up_to_date", "message": "当前范围已同步，无需重复更新"}
+            return self._launch(plan)
+
+    def start_export(self, body):
+        if not isinstance(body, dict) or set(body) != {'market'} or body['market'] not in {'cn', 'us'}:
+            raise ValueError('导出只接受 cn 或 us 市场')
+        plan = {'request': {'dataset': 'export', 'mode': 'full', 'market': body['market'],
+                           'start_date': '1990-01-01', 'end_date': datetime.now().date().isoformat(), 'symbols': []},
+                'before': {'datasets': []}, 'unit_count': 7}
+        return self._launch(plan)
+
+    def _launch(self, plan):
+        with self.lock:
+            if self.restarting or self.active:
+                raise RuntimeError('请先完成或取消当前任务')
             job_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="simtrade-update-", delete=False) as temporary:
                 json.dump(plan["request"], temporary)
@@ -149,7 +163,8 @@ class JobManager:
             self.active = job_id
             self.jobs = [job]
             key = (plan["request"]["start_date"], plan["request"]["end_date"], tuple(plan["request"]["symbols"]))
-            self.cache[key] = (time.monotonic(), plan["before"])
+            if plan['request']['dataset'] != 'export':
+                self.cache[key] = (time.monotonic(), plan["before"])
             root = Path(__file__).resolve().parents[2]
             try:
                 self.process = subprocess.Popen(
@@ -183,16 +198,21 @@ class JobManager:
                         job["logs"] = job["logs"][-300:]
             code = process.wait()
             with self.lock:
+                if job['request']['dataset'] == 'export':
+                    from simtradedata.web.exports import cleanup_export
+                    cleanup_export(self.data_dir, job['request']['market'])
                 job["status"] = "cancelled" if job["status"] == "cancelling" else ("completed" if code == 0 else "failed")
                 job.update(ended_at=now(), exit_code=code)
                 try:
                     request = job["request"]
-                    job["after"] = summary(inspect_coverage(self.data_dir, request["start_date"], request["end_date"], request["symbols"], include_pcf=request["dataset"] == "pcf"))
+                    job["after"] = [] if request['dataset'] == 'export' else summary(inspect_coverage(self.data_dir, request["start_date"], request["end_date"], request["symbols"], include_pcf=request["dataset"] == "pcf"))
                 except Exception as error:
                     job["logs"].append(f"更新后覆盖检查失败：{error}")
                     if job["status"] == "completed":
                         job["status"] = "failed"
-                if job['status'] == 'completed':
+                if request['dataset'] == 'export':
+                    job['message'] = '回测数据包已生成' if job['status'] == 'completed' else '导出未完成，原有数据包保留'
+                elif job['status'] == 'completed':
                     job['message'] = '更新已完成，已有有效数据保留。'
                 elif job['status'] == 'failed':
                     job['message'] = '更新已结束，部分单元仍需核验。'

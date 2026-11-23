@@ -10,7 +10,7 @@
 [![Code Style: Black](https://img.shields.io/badge/Code%20Style-Black-000000.svg)](https://github.com/psf/black)
 [![uv](https://img.shields.io/badge/Packaging-uv-261230)](https://docs.astral.sh/uv/)
 
-为[SimTradeLab](https://github.com/kay-ou/SimTradeLab)准备本地回测数据：支持A股、ETF和美股，多源下载到DuckDB，再导出为Parquet。
+为[SimTradeLab](https://github.com/kay-ou/SimTradeLab)和SimTradeDesk准备本地回测数据：支持A股、ETF和美股，多源下载到DuckDB，再导出为共享Parquet数据包。
 
 ## 用网页管理数据（推荐）
 
@@ -29,10 +29,11 @@ npm run ui -- --port 8767
 1. 点击“更新回测数据”：股票和ETF统一补齐，无需逐只选择。
 2. 已有有效数据自动跳过；下载时显示实时进度，可取消，失败后可继续补齐。
 3. 股票和ETF分别显示已保存数量及日期范围；季度财务和ETF申赎清单位于“其他数据”。
+4. 在“导出回测数据包”生成并下载CN或US包，解压到对应应用的数据目录；不需要在页面输入导出命令或路径。
 
 默认使用 `data/cn.duckdb`，可通过 `--data-dir /path/to/data` 指定其他目录。更新判断来自实际数据，不保存下载任务历史。启动时自动安装前端依赖、按需构建，并由uv同步Python依赖。端口从8765开始自动选择可用值，无需手填；以终端显示的地址为准。界面右上角可切换中文、English和Deutsch，首次跟随浏览器语言，之后记住手动选择。
 
-完整操作、日期范围、质量修补与数据源健康检查见[网页使用指南](docs/WEB_DATA_ADMIN.md)。网页目前管理沪深股票、ETF日线、季度财务、深市历史PCF和交易日历；美股及导出使用命令行。
+完整操作、日期范围、质量修补、数据包导出与数据源健康检查见[网页使用指南](docs/WEB_DATA_ADMIN.md)。网页管理沪深股票、ETF日线、季度财务、深市历史PCF和交易日历，并可导出CN/US数据包；美股下载仍使用命令行。
 
 ## 直接使用现成数据
 

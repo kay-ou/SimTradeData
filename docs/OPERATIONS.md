@@ -86,7 +86,11 @@ npm run ci:full -- --python 3.12
 
 Requires Node.js 20+ (with npm) and uv; no `npm install` is needed.
 By default both Python 3.10 and 3.12 run locked dependency installation,
-static checks, offline tests, and distribution builds. uv can download missing
+static checks, offline tests, and distribution builds. Live health checks then run
+once using the last selected Python version, with the same data-source, retained
+Mootdx interface, and ETF PCF probes used by the scheduled GitHub workflow.
+Unavailable, empty, stale, or invalid source responses fail local CI even if the
+offline tests pass. uv can download missing
 Python interpreters and dependencies. Each version uses its own environment
 under `.venv-ci/`, leaving the development `.venv` in place.
 Reports are written to `reports/ci/python-<version>/`, with stage statuses and
@@ -94,7 +98,11 @@ timings in `reports/ci/summary.json`; distributions go to `dist/ci/python-<versi
 Independent checks continue after a failure, then the command exits with code 1
 if any stage failed. Dependency failure skips the remaining stages for that
 Python version. Every invocation runs the selected checks again.
-Live provider probes remain separate from this offline regression pipeline.
+Live probes are separate stages, so reports distinguish code regression failures
+from external source failures. They write sample reports and PCF archives under
+the CI report directory, without updating the production database. Local and
+GitHub results can still differ with network location, execution time, or source
+availability; passing offline tests alone does not verify live interfaces.
 
 `.github/workflows/data-sources.yml` runs independently at 07:17 and 15:17 UTC
 every day and supports manual dispatch. It probes daily bars from

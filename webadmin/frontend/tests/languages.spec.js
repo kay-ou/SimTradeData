@@ -12,11 +12,11 @@ test('switch languages without losing ETF selection; persist on reload', async (
   await page.getByText('手动输入ETF代码', { exact: true }).click();
   await page.getByLabel('ETF代码', { exact: true }).fill('159919.SZ');
   await page.getByLabel(selector).selectOption('en');
-  await expect(page.getByRole('heading', { name: 'Update your backtesting data' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Prepare backtest data' })).toBeVisible();
   await expect(page.getByLabel('ETF codes', { exact: true })).toHaveValue('159919.SZ');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en-US');
   await page.getByLabel(selector).selectOption('de');
-  await expect(page.getByRole('heading', { name: 'Backtesting-Daten aktualisieren', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Backtestdaten vorbereiten', exact: true })).toBeVisible();
   await expect(page.getByLabel('ETF-Codes', { exact: true })).toHaveValue('159919.SZ');
   await expect(page.getByRole('heading', { name: 'Quartalsfinanzdaten' })).toHaveCount(0);
   await page.reload();
@@ -73,7 +73,7 @@ test('language switching works when browser storage is disabled', async ({ page 
   await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage disabled'); } }));
   await page.goto('/');
   await page.getByLabel(selector).selectOption('en');
-  await expect(page.getByRole('heading', { name: 'Update your backtesting data' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Prepare backtest data' })).toBeVisible();
 });
 
 async function untranslatedUI(page) {
@@ -181,7 +181,7 @@ for (const browserLocale of ['zh-CN', 'en-US']) {
     const chinese = browserLocale === 'zh-CN';
     await expect(page.getByLabel(selector)).toHaveValue(chinese ? 'zh' : 'en');
     await expect(page.locator('html')).toHaveAttribute('lang', chinese ? 'zh-CN' : 'en-US');
-    await expect(page.getByRole('heading', { name: chinese ? '更新你的回测数据' : 'Update your backtesting data' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: chinese ? '准备回测数据' : 'Prepare backtest data' })).toBeVisible();
     await context.close();
   });
 }

@@ -12,7 +12,7 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log("npm run ci:full [-- --python 3.10 --python 3.12]");
-  console.log("Default: both Python versions; stages: dependencies, lint, tests, build.");
+  console.log("Default: both Python versions; dependencies, lint, offline tests, build, then live data-source health checks once.");
   process.exit(0);
 }
 
@@ -47,6 +47,16 @@ for (const version of versions) {
     ["build", ["build", "--no-sources", "--python", version,
       "--out-dir", join(root, "dist", "ci", `python-${version}`)]],
   ];
+  if (version === versions.at(-1)) {
+    stages.push(
+      ["health:data-sources", [...run, "python", "-m", "scripts.check_data_sources",
+        "--timeout", "90", "--attempts", "2", "--json-output", join(reportDir, "data-sources.json")]],
+      ["health:mootdx-interfaces", [...run, "python", "-m", "scripts.check_mootdx_interfaces",
+        "--timeout", "90", "--json-output", join(reportDir, "mootdx-interfaces.json")]],
+      ["health:etf-pcf", [...run, "python", "-m", "scripts.check_etf_pcf",
+        "--archive-dir", join(reportDir, "etf-pcf"), "--json-output", join(reportDir, "etf-pcf.json")]],
+    );
+  }
   let dependenciesReady = true;
   for (const [stage, args] of stages) {
     if (!dependenciesReady) {

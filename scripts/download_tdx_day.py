@@ -26,6 +26,8 @@ Usage:
 
 import argparse
 import logging
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -171,6 +173,16 @@ def needs_update(local_path: Path, remote_info: dict) -> bool:
     if remote_info.get("size"):
         local_size = local_path.stat().st_size
         if local_size != remote_info["size"]:
+            return True
+
+    if remote_info.get("last_modified"):
+        try:
+            modified = parsedate_to_datetime(remote_info["last_modified"])
+            if modified.tzinfo is None:
+                modified = modified.replace(tzinfo=timezone.utc)
+            if modified > datetime.fromtimestamp(local_path.stat().st_mtime, timezone.utc):
+                return True
+        except (TypeError, ValueError, OverflowError):
             return True
 
     return False

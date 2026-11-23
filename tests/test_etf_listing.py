@@ -65,3 +65,59 @@ def test_failed_issuance_is_not_confused_with_delisting(monkeypatch):
     get=Mock(side_effect=[profile('封闭期'),response({'ErrCode':0,'Data':[{'FUNDCODE':'158900','TITLE':'基金合同不能生效的公告','ID':'AN2'}]})])
     monkeypatch.setattr('simtradedata.web.etf_listing.requests.get',get)
     assert fetch_etf_listing_info('158900.SZ')['state']=='not_established'
+
+
+def test_delisting_uses_explicit_date_not_record_or_publication_date():
+    from simtradedata.web.etf_listing import delisting_dates
+    content='基金代码：159503。终止上市日：2024年7月19日。权益登记日：2024年7月18日。本基金已自2024年7月12日起停牌，停牌直至终止上市。'
+    assert delisting_dates(content,'159503.SZ')=={'de_listed_date':'2024-07-19','halt_start':'2024-07-12'}
+    assert delisting_dates('基金代码：159503。公告发布2024年7月18日，将终止上市。','159503.SZ') is None
+    with pytest.raises(ValueError):
+        delisting_dates(content,'159001.SZ')
+
+
+def test_temporary_suspension_is_not_extended_to_delisting():
+    from simtradedata.web.etf_listing import delisting_dates
+    content='基金代码：159503。终止上市日：2024年7月19日。自2024年7月12日起停牌一天，次日复牌。'
+    assert delisting_dates(content,'159503.SZ')['halt_start'] is None
+
+
+def test_delisting_stores_metadata_and_merges_halt_without_market_rows(tmp_path):
+    from simtradedata.web.etf_listing import store_delisting
+    from simtradedata.web.etf_catalogue import daily_etf_gaps
+    from simtradedata.writers.duckdb_writer import DuckDBWriter
+    with DuckDBWriter(str(tmp_path/'cn.duckdb')) as writer:
+        writer.conn.execute("INSERT INTO trade_days VALUES ('2024-07-11'),('2024-07-12'),('2024-07-18'),('2024-07-19')")
+        writer.conn.execute("INSERT INTO stocks(symbol,date,close) VALUES ('159503.SZ','2024-07-11',1)")
+        writer.conn.execute("INSERT INTO stock_status VALUES ('20240712','HALT','[\"000001.SZ\"]')")
+        info={'symbol':'159503.SZ','name':'test ETF','de_listed_date':'2024-07-19','halt_start':'2024-07-12'}
+        store_delisting(writer,info)
+        assert writer.conn.execute('SELECT COUNT(*) FROM stocks').fetchone()[0]==1
+        assert daily_etf_gaps(writer.conn,['159503.SZ'],'2024-07-11','2024-07-19')=={}
+        assert writer.conn.execute("SELECT symbols FROM stock_status WHERE date='20240712'").fetchone()[0]=='["000001.SZ", "159503.SZ"]'
+        store_delisting(writer,info)
+        assert writer.conn.execute('SELECT COUNT(*) FROM stocks').fetchone()[0]==1
+
+
+def test_delisting_conflicting_with_existing_market_data_is_not_applied(tmp_path):
+    from simtradedata.web.etf_listing import store_delisting
+    from simtradedata.writers.duckdb_writer import DuckDBWriter
+    with DuckDBWriter(str(tmp_path/'cn.duckdb')) as writer:
+        writer.conn.execute("INSERT INTO stocks(symbol,date,close) VALUES ('159503.SZ','2024-07-20',1)")
+        with pytest.raises(ValueError,match='market bars'):
+            store_delisting(writer,{'symbol':'159503.SZ','name':'test','de_listed_date':'2024-07-19','halt_start':None})
+        assert writer.conn.execute('SELECT COUNT(*) FROM stock_metadata').fetchone()[0]==0
+
+
+def test_indefinite_suspension_date_belongs_to_its_clause(tmp_path):
+    from simtradedata.web.etf_listing import delisting_dates, store_delisting
+    from simtradedata.writers.duckdb_writer import DuckDBWriter
+    content = ('基金代码：159503。终止上市日：2026年11月20日。'
+               '自2026年10月15日起停牌一天，次日复牌。'
+               '自2026年11月16日起停牌，停牌直至终止上市。')
+    info = delisting_dates(content, '159503.SZ')
+    assert info['halt_start'] == '2026-11-16'
+    with DuckDBWriter(str(tmp_path / 'cn.duckdb')) as writer:
+        writer.conn.execute("INSERT INTO trade_days VALUES ('2026-10-15'),('2026-11-13'),('2026-11-16')")
+        store_delisting(writer, {'symbol':'159503.SZ', 'name':'test', **info})
+        assert writer.conn.execute('SELECT date FROM stock_status ORDER BY date').fetchall() == [('20261116',)]

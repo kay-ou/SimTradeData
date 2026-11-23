@@ -1,131 +1,65 @@
-"""Exercise the npm CI entrypoint with isolated fake uv commands."""
+"""Local CI runs real probe commands and propagates their exit status."""
 
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    os.name == "nt" or shutil.which("npm") is None,
-    reason="Fake uv executable requires POSIX and npm",
-)
+
+pytestmark = [
+    pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for the CI runner"),
+    pytest.mark.skipif(os.name == "nt", reason="The fake uv launcher requires POSIX shebang support"),
+]
 
 
-@pytest.fixture
-def ci_project(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    project = tmp_path / "project"
-    scripts = project / "scripts" / "cicd"
-    scripts.mkdir(parents=True)
-    shutil.copyfile(root / "scripts" / "cicd" / "run.mjs", scripts / "run.mjs")
-    shutil.copyfile(root / "package.json", project / "package.json")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_uv = bin_dir / "uv"
-    fake_uv.write_text(
-        f"#!{sys.executable}\n"
-        "import json, os, sys\n"
-        "args = sys.argv[1:]\n"
-        "version = args[args.index('--python') + 1]\n"
-        "with open(os.environ['CI_TEST_COMMANDS'], 'a') as log:\n"
-        "    log.write(json.dumps({'args': args, 'cwd': os.getcwd(), "
-        "'environment': os.environ['UV_PROJECT_ENVIRONMENT']}) + '\\n')\n"
-        "fail = os.environ.get('CI_TEST_FAIL')\n"
-        "sys.exit(9 if fail in args and version == '3.10' else 0)\n"
-    )
-    fake_uv.chmod(0o755)
-    commands = tmp_path / "commands.jsonl"
-    env = {
-        **os.environ,
-        "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
-        "CI_TEST_COMMANDS": str(commands),
-        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "development-venv"),
-    }
-    return project, commands, env
+def run_ci(tmp_path, failure='', arguments=()):
+    root = tmp_path / 'project'
+    runner = root / 'scripts' / 'cicd' / 'run.mjs'
+    runner.parent.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).parents[1] / 'scripts/cicd/run.mjs', runner)
+    binary = tmp_path / 'bin'
+    binary.mkdir()
+    uv = binary / 'uv'
+    uv.write_text(f'#!{sys.executable}\n' + '''import json, os, sys
+with open(os.environ['CI_TEST_CALLS'], 'a') as output:
+    output.write(json.dumps(sys.argv[1:]) + '\\n')
+sys.exit(1 if os.environ['CI_TEST_FAIL'] in sys.argv[1:] else 0)
+''')
+    uv.chmod(0o755)
+    calls = tmp_path / 'calls.jsonl'
+    process = subprocess.run(['node', str(runner), *arguments], capture_output=True, text=True,
+                             env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                                  'CI_TEST_CALLS': str(calls), 'CI_TEST_FAIL': failure})
+    return process, json.loads((root / 'reports/ci/summary.json').read_text()), [
+        json.loads(line) for line in calls.read_text().splitlines()]
 
 
-def test_full_ci_runs_both_versions_in_separate_environments(ci_project):
-    project, commands, env = ci_project
-    result = subprocess.run(
-        [shutil.which("npm"), "run", "ci:full"],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    calls = [json.loads(line) for line in commands.read_text().splitlines()]
-    assert len(calls) == 8
-    for version, version_calls in zip(["3.10", "3.12"], [calls[:4], calls[4:]]):
-        assert [call["args"][0] for call in version_calls] == [
-            "sync",
-            "run",
-            "run",
-            "build",
-        ]
-        assert all(call["cwd"] == str(project) for call in version_calls)
-        assert all(
-            call["environment"] == str(project / ".venv-ci" / f"python-{version}")
-            for call in version_calls
-        )
-        test_args = version_calls[2]["args"]
-        assert "--disable-socket" in test_args
-        assert "not external and not performance" in test_args
-    report = json.loads((project / "reports" / "ci" / "summary.json").read_text())
-    assert report["ok"] is True
-    assert len(report["results"]) == 8
-    assert all(stage["status"] == "passed" for stage in report["results"])
+def test_default_ci_probes_live_sources_once_after_both_python_versions(tmp_path):
+    process, summary, calls = run_ci(tmp_path)
+    assert process.returncode == 0 and summary['ok']
+    assert len(calls) == 11
+    probes = [call for call in calls if 'python' in call and '-m' in call]
+    assert [call[call.index('-m') + 1] for call in probes] == [
+        'scripts.check_data_sources', 'scripts.check_mootdx_interfaces', 'scripts.check_etf_pcf']
+    assert all(call[call.index('--python') + 1] == '3.12' for call in probes)
+    assert all('--disable-socket' not in call for call in probes)
 
 
-@pytest.mark.parametrize(
-    "failed_command,stage", [("sync", "dependencies"), ("pytest", "tests")]
-)
-def test_ci_failure_is_reported_and_other_version_still_runs(
-    ci_project, failed_command, stage
-):
-    project, commands, env = ci_project
-    env["CI_TEST_FAIL"] = failed_command
-    result = subprocess.run(
-        [shutil.which("npm"), "run", "ci:full"],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 1
-    report = json.loads((project / "reports" / "ci" / "summary.json").read_text())
-    assert report["ok"] is False
-    failed = [item for item in report["results"] if item["status"] == "failed"]
-    assert [(item["python"], item["stage"], item["exit_code"]) for item in failed] == [
-        ("3.10", stage, 9)
-    ]
-    assert all(item["status"] == "passed" for item in report["results"][4:])
-    skipped = [
-        item["stage"] for item in report["results"] if item["status"] == "skipped"
-    ]
-    assert skipped == (["lint", "tests", "build"] if stage == "dependencies" else [])
-    assert len(commands.read_text().splitlines()) == (
-        5 if stage == "dependencies" else 8
-    )
+@pytest.mark.parametrize('probe', ['check_data_sources', 'check_mootdx_interfaces', 'check_etf_pcf'])
+def test_live_probe_failure_fails_ci_without_skipping_other_probes(tmp_path, probe):
+    process, summary, calls = run_ci(tmp_path, f'scripts.{probe}', ('--python', '3.12'))
+    assert process.returncode == 1 and not summary['ok']
+    assert len(calls) == 7
+    assert len([stage for stage in summary['results'] if stage['status'] == 'failed']) == 1
+    assert all(stage['status'] == 'passed' for stage in summary['results'][:4])
 
 
-def test_python_option_limits_ci_to_selected_version(ci_project):
-    project, commands, env = ci_project
-    result = subprocess.run(
-        [shutil.which("npm"), "run", "ci:full", "--", "--python", "3.12"],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert len(commands.read_text().splitlines()) == 4
-    report = json.loads((project / "reports" / "ci" / "summary.json").read_text())
-    assert {item["python"] for item in report["results"]} == {"3.12"}
+def test_dependency_failure_reports_live_checks_skipped_and_fails_ci(tmp_path):
+    process, summary, calls = run_ci(tmp_path, 'sync', ('--python', '3.10'))
+    assert process.returncode == 1 and not summary['ok']
+    assert len(calls) == 1
+    assert all(stage['status'] == 'skipped' for stage in summary['results'][1:])

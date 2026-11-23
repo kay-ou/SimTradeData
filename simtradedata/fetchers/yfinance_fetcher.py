@@ -199,11 +199,8 @@ class YFinanceFetcher(BaseFetcher):
                 # Calculate preclose (previous day's close)
                 df["preclose"] = df["close"].shift(1)
 
-                # Calculate approximate money (VWAP proxy)
-                df["money"] = (
-                    (df["open"] + df["high"] + df["low"] + df["close"]) / 4
-                    * df["volume"]
-                )
+                # Yahoo supplies no actual traded amount; keep it unknown.
+                df["money"] = float('nan')
 
                 # high_limit and low_limit are NULL for US stocks
                 df["high_limit"] = None

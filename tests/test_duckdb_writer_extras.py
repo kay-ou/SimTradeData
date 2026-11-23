@@ -516,8 +516,10 @@ class TestExportDelta:
             )
         assert not tmp_path.exists()
 
-    def test_export_delta_symbol_tables_match_full_export_rows(self, tmp_path):
+    @pytest.mark.parametrize("status_date", ["2026-06-22", "20260622"])
+    def test_export_delta_symbol_tables_match_full_export_rows(self, tmp_path, status_date):
         self._seed_delta_data()
+        self.writer.write_stock_status(status_date, "HALT", ["000002.SZ"])
         self.writer.conn.execute("DELETE FROM data_change_log")
         full_dir = tmp_path / "full"
         delta_dir = tmp_path / "delta"
@@ -529,6 +531,11 @@ class TestExportDelta:
             market="cn",
         )
         self.writer.export_to_parquet(str(full_dir), market="cn")
+
+        for directory in [full_dir, delta_dir]:
+            status = pd.read_parquet(directory / "metadata" / "stock_status.parquet")
+            assert "20260622" in status["date"].tolist()
+            assert "2026-06-22" not in status["date"].tolist()
 
         for table in ["stocks", "valuation", "fundamentals", "exrights"]:
             delta_rows = pd.read_parquet(delta_dir / table / "000001.SZ.parquet")
@@ -667,7 +674,7 @@ class TestExportDelta:
             check_dtype=False,
         )
 
-    def test_export_delta_enriches_halt_status_from_zero_volume(self, tmp_path):
+    def test_export_delta_requires_explicit_halt_evidence(self, tmp_path):
         market_df = pd.DataFrame({
             "date": pd.to_datetime(["2026-06-19", "2026-06-22"]),
             "open": [10.0, 10.0],
@@ -686,7 +693,9 @@ class TestExportDelta:
             target_version="2026-06-22",
             market="cn",
         )
-
+        assert not (tmp_path / 'metadata' / 'stock_status.parquet').exists()
+        self.writer.conn.execute("INSERT INTO stock_status(date,status_type,symbols) VALUES ('20260622','HALT','[\"000001.SZ\"]')")
+        self.writer.export_delta(str(tmp_path), base_version='2026-06-20', target_version='2026-06-22', market='cn')
         status = pd.read_parquet(tmp_path / "metadata" / "stock_status.parquet")
         assert status["date"].tolist() == ["20260622"]
         assert status.iloc[0]["status_type"] == "HALT"
@@ -815,7 +824,7 @@ class TestExportDelta:
                 market="cn",
             )
 
-    def test_export_delta_requires_metadata_when_security_type_catalog_exists(self, tmp_path):
+    def test_export_delta_unknown_security_type_does_not_drop_downloaded_stock(self, tmp_path):
         market_df = pd.DataFrame({
             "date": pd.to_datetime(["2026-06-22"]),
             "open": [10.0],
@@ -846,9 +855,9 @@ class TestExportDelta:
         )
 
         manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
-        assert manifest["changed_symbols"] == ["000001.SZ"]
+        assert manifest["changed_symbols"] == ["000001.SZ", "002999.SZ"]
         assert (tmp_path / "stocks" / "000001.SZ.parquet").exists()
-        assert not (tmp_path / "stocks" / "002999.SZ.parquet").exists()
+        assert (tmp_path / "stocks" / "002999.SZ.parquet").exists()
 
     def test_cli_missing_db_exits_nonzero(self, tmp_path):
         result = subprocess.run(
@@ -869,24 +878,6 @@ class TestExportDelta:
 
         assert result.returncode != 0
         assert "Database not found" in result.stderr
-
-
-class FakeStocksClient:
-    """Fake mootdx Quotes client returning NUL-padded names (TDX fixed buffer)."""
-
-    def stocks(self, market=0):
-        if market == 0:  # SZ
-            return pd.DataFrame({
-                "code": ["000001", "000002"],
-                "name": ["平安银行\x00\x00", "万 科Ａ\x00"],
-            })
-        return pd.DataFrame({"code": [], "name": []})
-
-    def index(self, **kwargs):
-        return pd.DataFrame()
-
-    def bars(self, **kwargs):
-        return pd.DataFrame()
 
 
 def _seed_metadata_db(conn):
@@ -921,45 +912,17 @@ class TestEnsureStockMetadataNames:
     def teardown_method(self):
         self.writer.close()
 
-    def test_preserves_existing_name_and_strips_nul(self):
-        with patch("mootdx.quotes.Quotes.factory", return_value=FakeStocksClient()):
+    def test_export_metadata_preserves_names_and_verified_dates_without_network(self):
+        self.writer.conn.execute("UPDATE stock_metadata SET listed_date='1991-04-03',de_listed_date='2027-01-01' WHERE symbol='000001.SZ'")
+        with patch("mootdx.quotes.Quotes.factory", side_effect=AssertionError('Export must not fetch metadata')):
             self.writer._ensure_stock_metadata_from_pool()
+        assert self.writer.conn.execute("SELECT stock_name,listed_date,de_listed_date FROM stock_metadata WHERE symbol='000001.SZ'").fetchone() == ('平安银行','1991-04-03','2027-01-01')
+        assert self.writer.conn.execute("SELECT listed_date,de_listed_date FROM stock_metadata WHERE symbol='000003.SZ'").fetchone() == (None,None)
 
-        names = dict(self.writer.conn.execute(
-            "SELECT symbol, stock_name FROM stock_metadata"
-        ).fetchall())
-        # 已有名字保留（redis 权威），不被 mootdx 覆盖
-        assert names["000001.SZ"] == "平安银行"
-        # 新股票用 mootdx 名字，NUL 填充被剥离
-        assert names["000002.SZ"] == "万 科Ａ"
-        # 退市股（mootdx 列表无）名字为空，待 redis sync 填充
-        assert names.get("000003.SZ") is None
-
-    def test_zero_history_symbol_gets_listed_sentinel(self):
-        # 池内有、但 stocks 表零历史的新股：落远未来哨兵，
-        # 避免 check_integrity 门禁把空 listed_date 误判为已上市
-        self.writer.conn.execute(
-            "INSERT INTO stock_pool VALUES ('000004.SZ', '2020-01-01', '2026-09-30')"
-        )
-
-        class ClientWithNewStock(FakeStocksClient):
-            def stocks(self, market=0):
-                if market == 0:
-                    return pd.DataFrame({
-                        "code": ["000001", "000002", "000004"],
-                        "name": ["平安银行\x00\x00", "万 科Ａ\x00", "新股测试"],
-                    })
-                return pd.DataFrame({"code": [], "name": []})
-
-        with patch("mootdx.quotes.Quotes.factory", return_value=ClientWithNewStock()):
-            self.writer._ensure_stock_metadata_from_pool()
-
-        rows = dict(self.writer.conn.execute(
-            "SELECT symbol, listed_date FROM stock_metadata"
-        ).fetchall())
-        assert rows["000004.SZ"] == "2900-01-01"
-        # 有历史的股票不受影响
-        assert rows["000001.SZ"].startswith("2026-09-30")
+    def test_zero_history_symbol_remains_unverified(self):
+        self.writer.conn.execute("INSERT INTO stock_pool VALUES ('000004.SZ','2020-01-01','2026-09-30')")
+        self.writer._ensure_stock_metadata_from_pool()
+        assert self.writer.conn.execute("SELECT listed_date,de_listed_date FROM stock_metadata WHERE symbol='000004.SZ'").fetchone() == (None,None)
 
 
 @pytest.mark.unit

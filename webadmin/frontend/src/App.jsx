@@ -7,6 +7,7 @@ import Tasks from './Tasks';
 import SourceHealth from './SourceHealth';
 import RestartButton from './RestartButton';
 import useEtfCatalogue from './useEtfCatalogue';
+import ExportPanel from './ExportPanel';
 
 const iso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const today = new Date();
@@ -135,6 +136,15 @@ export default function App() {
     try { await api(`/api/jobs/${id}/cancel`, {}); setJobs((await api('/api/jobs')).jobs); }
     catch (reason) { setError(reason.message); }
   }
+  async function startExport(market) {
+    setPending(true);
+    try {
+      const job = await api('/api/exports', { market });
+      visibleJob.current = job.id;
+      setJobs([job]);
+      document.getElementById('export-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } finally { setPending(false); }
+  }
   function selectAutoRange(value) {
     setAutoRange(value); setPreview(null); setError('');
     if (value) setFormState(previous => ({ ...previous, mode: 'auto' }));
@@ -176,9 +186,10 @@ export default function App() {
   </>;
   return <>
     <header><div className="header-inner"><a className="brand" href="/">SimTradeData<span>{t("数据管理")}</span></a><select className="language-select" aria-label="Language / Sprache / 语言" value={language} onChange={event => setLanguage(event.target.value)}><option value="zh">中文</option><option value="en">English</option><option value="de">Deutsch</option></select></div></header>
-    <main><div className="page-heading"><div><h1>{t("更新你的回测数据")}</h1><p>{t("股票与ETF一起更新，已有有效数据自动跳过。")}</p></div><RestartButton active={Boolean(active) || pending} /></div>
+    <main><div className="page-heading"><div><h1>{t("准备回测数据")}</h1><p>{t("股票与ETF一起更新，已有有效数据自动跳过。")}{t("更新完成后，生成并下载下方的数据包。")}</p></div><RestartButton active={Boolean(active) || pending} /></div>
       {!active && <UpdateForm catalogue={catalogue} lastJob={jobs[0]} onRecheck={() => setRefresh(value => value + 1)} onTaskDetails={() => { const details = document.querySelector('#tasks .failures'); if (details) { details.open = true; details.scrollIntoView({ behavior: 'smooth', block: 'center' }); } }} autoRange={autoRange} onAutoRange={selectAutoRange} recommendation={recommendation} form={form} setForm={setForm} preview={preview} onDownload={start} pending={pending} active={Boolean(active)} error={error} onCoverage={viewCoverage} onRepair={repair} />}
-      <Tasks jobs={jobs} onCancel={cancel} onRetry={retry} />
+      <Tasks jobs={jobs.filter(job => job.request.dataset !== 'export')} onCancel={cancel} onRetry={retry} />
+      <ExportPanel active={active} pending={pending} refresh={refresh} job={jobs.find(job => job.request.dataset === 'export')} onExport={startExport} onCancel={cancel} />
       {active ? <details className="background-data"><summary>{t("查看已有数据与数据源")}</summary>{storedData}</details> : storedData}
       <footer>{t("仅连接本机数据目录。最新快照不计入历史覆盖；未发布或不可获取的数据不会被填造。")}</footer>
     </main>

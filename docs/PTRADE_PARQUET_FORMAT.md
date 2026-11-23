@@ -1,6 +1,6 @@
-# PTrade Parquet 数据格式规范
+# 共享 Parquet 数据格式规范
 
-本文档定义了 PTrade 数据包的 Parquet 格式规范，作为 SimTradeData 导出的目标格式。
+本文档定义 SimTradeData 为 SimTradeLab / SimTradeDesk 导出的共享 Parquet 契约。底层字段保留 PTrade API 兼容命名；产品入口以回测数据包为定位。
 
 财务字段覆盖情况见 [PTrade Financial Field Coverage](PTRADE_FINANCIAL_COVERAGE.md)。
 
@@ -27,8 +27,9 @@ data/
 │   ├── index_constituents.parquet  # 指数成分股
 │   ├── stock_status.parquet     # 股票状态(ST/停牌/退市)
 │   └── version.parquet          # 版本信息
-├── ptrade_adj_pre.parquet       # 前复权因子 (全量)
-├── ptrade_adj_post.parquet      # 后复权因子 (全量)
+├── ptrade_adj_pre.parquet       # 可选：已取得的独立前复权因子
+├── ptrade_adj_post.parquet      # 可选：已取得的独立后复权因子
+├── etf_pcf/                    # 可选：已保存的历史ETF申赎清单
 └── manifest.json                # 数据包清单
 ```
 
@@ -37,6 +38,8 @@ data/
 - **股票代码格式**: `{6位代码}.{市场}.parquet`
 - **市场标识**: `SS` = 上海, `SZ` = 深圳
 - **示例**: `000001.SZ.parquet`, `600000.SS.parquet`
+
+CN包包含沪深股票和交易所ETF，均使用上述命名。US包使用 `{ticker}.US.parquet`，例如 `AAPL.US.parquet`。数据包按市场分别生成，包内目录直接对应消费应用的市场数据目录。
 
 ---
 
@@ -58,6 +61,10 @@ data/
 | `money` | double | 成交金额 | 单位: 元 |
 
 **特点**: 按日期升序排列，无分区
+
+ETF与股票使用相同的文件结构，保留原始价格精度和实际成交量、成交额。导出保留已知昨收和涨跌停价；ETF缺少涨跌停价时不套用股票10%规则。无独立HALT依据的缺口不生成零成交行。缺失成交额保持NULL，不用量价乘积估算；旧版美股下载生成过估算金额，历史记录需按来源另行核验。
+
+上市、退市和停牌元数据保持已保存事实，未知值保持未知，不用首末行情日期或当前目录缺席推断。独立复权文件不会凭空生成；已有除权除息事件与因子字段继续按读取器的事件契约使用。
 
 ---
 

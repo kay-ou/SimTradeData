@@ -232,7 +232,8 @@ def test_all_market_automatically_saves_missing_etfs_and_continues_failures(tmp_
     calls.clear()
     result = update_daily(tmp_path, plan)
     assert calls == ['551001.SS']
-    assert result['skipped'] == 1
+    # Both the complete stock in the archive and the saved ETF are skipped.
+    assert result['skipped'] == 2
 
 
 def test_all_market_offline_does_not_discover_or_fetch_etfs(tmp_path, monkeypatch):
@@ -400,3 +401,21 @@ def test_authoritative_calendar_detects_dates_absent_from_trade_days(tmp_path):
         assert trading_dates(conn,'2026-11-18','2026-11-20')==['2026-11-18','2026-11-19','2026-11-20']
         assert daily_etf_gaps(conn,['159919.SZ'],'2026-11-18','2026-11-20',include_dates=True)=={
             '159919.SZ':['2026-11-18','2026-11-19','2026-11-20']}
+
+
+def test_confirmed_delisting_and_halt_skip_tail_without_quote_requests(tmp_path,monkeypatch):
+    import struct,zipfile
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    from simtradedata.web.plans import build_plan
+    seed(tmp_path)
+    with zipfile.ZipFile(tmp_path/'downloads'/'hsjday.zip','a') as archive:
+        archive.writestr('vipdoc/sz/lday/sz159503.day',struct.pack('<IIIIIfII',20261118,1000,1100,900,1000,100.,100,0))
+    info={'symbol':'159503.SZ','name':'closed ETF','state':'delisted','listed_date':None,
+          'de_listed_date':'2026-11-20','halt_start':'2026-11-19','detail':'confirmed closure'}
+    monkeypatch.setattr('simtradedata.web.etf_listing.fetch_etf_listing_info',lambda *args:info)
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher',lambda *a,**k:pytest.fail('verified non-trading dates must not request prices'))
+    request={'dataset':'daily','mode':'auto','start_date':'2026-11-18','end_date':'2026-11-20','symbols':['159503.SZ']}
+    result=update_daily(tmp_path,build_plan(tmp_path,request))
+    assert result['failed_units']==[] and result['skipped']==1
+    assert result['not_trading'][0]['state']=='delisted'

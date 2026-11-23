@@ -59,9 +59,17 @@ if __name__ == "__main__":
             with DuckDBWriter(str(Path(directory) / 'cn.duckdb')) as writer:
                 writer.conn.execute("INSERT INTO exchange_calendar VALUES ('2026-11-17',true)")
                 writer.conn.execute("INSERT INTO trade_days VALUES ('2026-11-17')")
+                writer.write_benchmark(pd.DataFrame({'open':10.,'high':11.,'low':9.,'close':10.5,'volume':1000,'money':10500.},
+                    index=pd.to_datetime(['2014-12-31','2026-11-17','2026-11-18','2026-11-19','2026-11-20'])))
                 for symbol in ['159919.SZ','159920.SZ','510300.SS']:
                     writer.conn.execute("INSERT INTO stock_metadata(symbol,listed_date) VALUES (?, '2026-11-18')", [symbol])
             os.environ["SIMTRADE_UI_FIXTURE_DIR"] = directory
+        from datetime import date
+        from simtradedata.web import recommendations
+        class FixtureDate(date):
+            @classmethod
+            def today(cls): return cls(2026, 11, 22)
+        recommendations.date = FixtureDate
         from simtradedata.web import source_health
         def healthy(_):
             return {"freshness": "current", "latest": "2026-11-20", "detail": "隔离测试样本有效"}

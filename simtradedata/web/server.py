@@ -5,6 +5,7 @@ import errno
 import json
 import mimetypes
 import os
+import shutil
 import sys
 import uuid
 from datetime import date, timedelta
@@ -48,6 +49,23 @@ def handler_for(manager, health=None, restart_enabled=False):
                     self.respond(200, catalogue.get())
                 elif parsed.path == "/api/jobs":
                     self.respond(200, {"jobs": manager.list_jobs()})
+                elif parsed.path == '/api/exports':
+                    from simtradedata.web.exports import export_status
+                    self.respond(200, export_status(manager.data_dir))
+                elif parsed.path in {'/api/exports/cn/download', '/api/exports/us/download'}:
+                    from simtradedata.web.exports import artifact_path
+                    path = artifact_path(manager.data_dir, parsed.path.split('/')[3])
+                    if not path.is_file():
+                        self.respond(404, {'error': '尚未生成数据包，请先导出'})
+                        return
+                    with path.open('rb') as stream:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/gzip')
+                        self.send_header('Content-Disposition', f'attachment; filename="{path.name}"')
+                        self.send_header('Content-Length', str(os.fstat(stream.fileno()).st_size))
+                        self.send_header('Cache-Control', 'no-store')
+                        self.end_headers()
+                        shutil.copyfileobj(stream, self.wfile)
                 elif parsed.path == "/api/recommendation":
                     args = parse_qs(parsed.query)
                     symbols = args.get("symbols", [""])[0]
@@ -121,6 +139,8 @@ def handler_for(manager, health=None, restart_enabled=False):
                     self.respond(202, health.check())
                 elif self.path == "/api/plans":
                     self.respond(200, manager.preview(body))
+                elif self.path == '/api/exports':
+                    self.respond(202, manager.start_export(body))
                 elif self.path == "/api/jobs":
                     if not isinstance(body, dict) or set(body) != {"plan_id"} or not isinstance(body["plan_id"], str):
                         raise ValueError("请先生成更新预览")

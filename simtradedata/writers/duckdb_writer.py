@@ -25,6 +25,7 @@ from simtradedata.config.field_mappings import (
 from simtradedata.config.mootdx_finvalue_map import FULL_FUNDAMENTAL_FIELDS
 from simtradedata.utils.paths import DUCKDB_PATH, safe_rmtree
 from simtradedata.validators.data_validator import DataQualityError, validate_before_write
+from simtradedata.web.daily_categories import ETF_SYMBOL_PATTERN, NON_TRADING_ETF_CODES, is_exchange_etf
 
 logger = logging.getLogger(__name__)
 
@@ -214,28 +215,14 @@ _CN_STOCK_FILTER = (
 
 
 def cn_stock_filter_sql(symbol_expr: str = "symbol") -> str:
-    """Official-first CN stock filter using BaoStock security_type when available."""
+    """Prefer each symbol's official classification; fall back only if unknown."""
     fallback = _CN_STOCK_FILTER.replace("symbol", symbol_expr)
-    has_security_type_metadata = """
-        EXISTS (
-            SELECT 1 FROM stock_metadata
-            WHERE security_type IS NOT NULL AND security_type != ''
-        )
-    """
     return f"""(
-        (
-            {has_security_type_metadata}
-            AND EXISTS (
-                SELECT 1 FROM stock_metadata sm
-                WHERE sm.symbol = {symbol_expr}
-                  AND sm.security_type = '1'
-                  AND ({symbol_expr} LIKE '%.SZ' OR {symbol_expr} LIKE '%.SS')
-            )
-        )
-        OR (
-            NOT {has_security_type_metadata}
-            AND {fallback}
-        )
+        EXISTS (SELECT 1 FROM stock_metadata sm WHERE sm.symbol={symbol_expr}
+                AND sm.security_type='1' AND ({symbol_expr} LIKE '%.SZ' OR {symbol_expr} LIKE '%.SS'))
+        OR (NOT EXISTS (SELECT 1 FROM stock_metadata sm WHERE sm.symbol={symbol_expr}
+                        AND sm.security_type IS NOT NULL AND sm.security_type!='')
+            AND {fallback})
     )"""
 
 
@@ -935,6 +922,24 @@ class DuckDBWriter:
         logger.debug(f"Wrote {written} market rows for {symbol}")
         return written
 
+    def insert_market_batch(self, frame: pd.DataFrame) -> int:
+        """Insert validated per-session rows once, preserving existing records."""
+        if frame.empty:
+            return 0
+        columns = ['symbol','date','open','close','high','low','preclose','volume','money']
+        frame = frame[columns].copy()
+        frame['date'] = pd.to_datetime(frame['date']).dt.date
+        if frame.duplicated(['symbol','date']).any():
+            raise ValueError('Duplicate daily package rows')
+        self.conn.register('_daily_batch', frame)
+        try:
+            fields = ','.join(columns)
+            inserted = self.conn.execute(f'INSERT INTO stocks ({fields}) SELECT {fields} FROM _daily_batch ON CONFLICT DO NOTHING RETURNING symbol,date').fetchdf()
+            self._record_symbol_changes('stocks', inserted)
+            return len(inserted)
+        finally:
+            self.conn.unregister('_daily_batch')
+
     def write_valuation(self, symbol: str, df: pd.DataFrame) -> int:
         """Write valuation data with upsert"""
         if df.empty:
@@ -1476,7 +1481,7 @@ class DuckDBWriter:
     # Export to Parquet
     # ========================================
 
-    def export_to_parquet(self, output_dir: str, market: str = "cn") -> None:
+    def export_to_parquet(self, output_dir: str, market: str = "cn", progress_callback=None) -> None:
         """Export all data to PTrade Parquet format"""
         output_path = Path(output_dir)
 
@@ -1501,19 +1506,33 @@ class DuckDBWriter:
                 (output_path / subdir).mkdir(parents=True, exist_ok=True)
 
             logger.info("Exporting stocks...")
-            self._export_stocks_batch(output_path / "stocks", market=market)
+            if progress_callback:
+                self._export_stocks_batch(output_path / "stocks", market=market,
+                    progress_callback=lambda done, total: progress_callback('stocks', done / max(total, 1)))
+            else:
+                self._export_stocks_batch(output_path / "stocks", market=market)
+            if progress_callback:
+                progress_callback('stocks', 1)
 
             logger.info("Exporting exrights...")
             self._export_exrights_batch(output_path / "exrights", market=market)
+            if progress_callback:
+                progress_callback('exrights', 2)
 
             logger.info("Exporting fundamentals...")
             self._export_fundamentals_batch(output_path / "fundamentals", market=market)
+            if progress_callback:
+                progress_callback('fundamentals', 3)
 
             logger.info("Exporting valuation...")
             self._export_valuation_batch(output_path / "valuation", market=market)
+            if progress_callback:
+                progress_callback('valuation', 4)
 
             logger.info("Exporting metadata...")
             self._export_metadata(output_path / "metadata", market=market)
+            if progress_callback:
+                progress_callback('metadata', 5)
 
             self._write_manifest(output_path, market=market)
 
@@ -1630,8 +1649,9 @@ class DuckDBWriter:
         """, [base_version]).fetchall()]
 
     def _cn_stock_filter_sql(self, symbol_expr: str = "symbol") -> str:
-        """Official-first CN stock filter using BaoStock security_type when available."""
-        return cn_stock_filter_sql(symbol_expr)
+        """Export stocks and exchange ETFs through the shared security layout."""
+        excluded = ','.join(f"'{symbol}'" for symbol in NON_TRADING_ETF_CODES)
+        return f"({cn_stock_filter_sql(symbol_expr)} OR (regexp_full_match({symbol_expr}, '{ETF_SYMBOL_PATTERN}') AND {symbol_expr} NOT IN ({excluded})))"
 
     def _filter_symbols_for_market(self, symbols, market: str) -> list[str]:
         if market != "cn":
@@ -1826,6 +1846,12 @@ class DuckDBWriter:
                 END AS low_limit
             """
 
+        if market == 'cn':
+            high_value = high_limit_sql.strip().removesuffix('AS high_limit')
+            low_value = low_limit_sql.strip().removesuffix('AS low_limit')
+            high_limit_sql = f"CASE WHEN regexp_full_match(symbol, '{ETF_SYMBOL_PATTERN}') THEN (SELECT s.high_limit FROM stocks s WHERE s.symbol=filled.symbol AND s.date=filled.date) ELSE COALESCE((SELECT s.high_limit FROM stocks s WHERE s.symbol=filled.symbol AND s.date=filled.date), {high_value}) END AS high_limit"
+            low_limit_sql = f"CASE WHEN regexp_full_match(symbol, '{ETF_SYMBOL_PATTERN}') THEN (SELECT s.low_limit FROM stocks s WHERE s.symbol=filled.symbol AND s.date=filled.date) ELSE COALESCE((SELECT s.low_limit FROM stocks s WHERE s.symbol=filled.symbol AND s.date=filled.date), {low_value}) END AS low_limit"
+
         self.conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _delta_stocks_export AS
             WITH trade_cal AS (
@@ -1852,11 +1878,15 @@ class DuckDBWriter:
                     CASE WHEN s.volume > 0 THEN s.low END AS low,
                     CASE WHEN s.volume > 0 THEN s.preclose END AS preclose,
                     COALESCE(s.volume, 0) AS volume,
-                    COALESCE(s.money, 0.0) AS money
+                    CASE WHEN s.symbol IS NULL THEN 0.0 ELSE s.money END AS money
                 FROM lifespans ls
                 CROSS JOIN trade_cal tc
                 LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = tc.date
                 WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
+                  AND (s.symbol IS NOT NULL OR EXISTS (
+                      SELECT 1 FROM stock_status h WHERE h.status_type='HALT'
+                      AND coalesce(TRY_CAST(h.date AS DATE),try_strptime(h.date,'%Y%m%d')::DATE)=tc.date
+                      AND json_contains(TRY_CAST(h.symbols AS JSON),to_json(ls.symbol))))
             ),
             gap_filled AS (
                 SELECT
@@ -1906,12 +1936,13 @@ class DuckDBWriter:
                     wl.date::TIMESTAMP_NS AS date,
                     wl.open, wl.close, wl.high, wl.low,
                     CASE
+                        WHEN wl.stored_preclose > 0 AND isfinite(wl.stored_preclose) THEN wl.stored_preclose
                         WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
                              AND wl.volume > 0 THEN
                             ROUND(
                                 (wl.lag_close - adj.total_deduction)
                                 / adj.total_divisor,
-                                2)
+                                CASE WHEN regexp_full_match(wl.symbol, '{ETF_SYMBOL_PATTERN}') THEN 3 ELSE 2 END)
                         ELSE COALESCE(wl.lag_close, wl.stored_preclose)
                     END AS preclose,
                     wl.volume, wl.money
@@ -2130,13 +2161,13 @@ class DuckDBWriter:
             if index_rows:
                 changed_tables.append({"table": "index_constituents", "rows": index_rows})
 
-            self._enrich_halt_status_from_volume()
             status_rows = self._copy_delta_json_date_table(
                 "stock_status",
                 output_dir / "stock_status.parquet",
                 base_version,
                 target_version,
-                "date, status_type, symbols::JSON::VARCHAR[] AS symbols",
+                "strftime(coalesce(TRY_CAST(date AS DATE),try_strptime(date,'%Y%m%d')::DATE),'%Y%m%d') AS date, "
+                "status_type, symbols::JSON::VARCHAR[] AS symbols",
                 full=True,
             )
             if status_rows:
@@ -2177,37 +2208,30 @@ class DuckDBWriter:
             """, [base_version, target_version])
         return rows
 
+    def _benchmark_export_query(self) -> str:
+        symbol = BENCHMARK_CONFIG["default_index"]
+        return f"""
+            SELECT date, open, high, low, close, volume, money
+            FROM stocks WHERE symbol = '{symbol}'
+            UNION ALL
+            SELECT date, open, high, low, close, volume, money
+            FROM benchmark b
+            WHERE NOT EXISTS (
+                SELECT 1 FROM stocks s WHERE s.symbol = '{symbol}' AND s.date = b.date
+            )
+        """
+
     def _copy_delta_benchmark(
         self, output_dir: Path, base_version: str, target_version: str
     ) -> int:
-        benchmark_symbol = BENCHMARK_CONFIG["default_index"]
-        rows = self.conn.execute("""
-            SELECT COUNT(*) FROM stocks
-            WHERE symbol = ? AND date > ?::DATE AND date <= ?::DATE
-        """, [benchmark_symbol, base_version, target_version]).fetchone()[0]
+        query = f"SELECT * FROM ({self._benchmark_export_query()}) WHERE date > ?::DATE AND date <= ?::DATE"
+        rows = self.conn.execute(
+            f"SELECT COUNT(*) FROM ({query})", [base_version, target_version]
+        ).fetchone()[0]
         if rows:
             self.conn.execute(f"""
-                COPY (
-                    SELECT date, open, high, low, close, volume,
-                           COALESCE(money, 0.0) AS money
-                    FROM stocks
-                    WHERE symbol = ? AND date > ?::DATE AND date <= ?::DATE
-                    ORDER BY date
-                ) TO '{output_dir / "benchmark.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
-            """, [benchmark_symbol, base_version, target_version])
-            return rows
-
-        rows = self.conn.execute("""
-            SELECT COUNT(*) FROM benchmark
-            WHERE date > ?::DATE AND date <= ?::DATE
-        """, [base_version, target_version]).fetchone()[0]
-        if rows:
-            self.conn.execute(f"""
-                COPY (
-                    SELECT * FROM benchmark
-                    WHERE date > ?::DATE AND date <= ?::DATE
-                    ORDER BY date
-                ) TO '{output_dir / "benchmark.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+                COPY ({query} ORDER BY date)
+                TO '{output_dir / "benchmark.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
             """, [base_version, target_version])
         return rows
 
@@ -2438,7 +2462,7 @@ class DuckDBWriter:
         self.conn.execute("DROP TABLE IF EXISTS _valuation_export_chunk")
         logger.info(f"Exported {exported_count} valuation files in {time.time() - t0:.1f}s")
 
-    def _export_stocks_batch(self, output_dir: Path, market: str = "cn") -> None:
+    def _export_stocks_batch(self, output_dir: Path, market: str = "cn", progress_callback=None) -> None:
         """Export all stocks with gap-filling and price limits (batch optimized).
 
         Gap-fill is materialized in symbol batches to bound peak memory;
@@ -2498,11 +2522,15 @@ class DuckDBWriter:
                         -- it will be recomputed as LAG(close) in the final step.
                         CASE WHEN s.volume > 0 THEN s.preclose END AS preclose,
                         COALESCE(s.volume, 0) AS volume,
-                        COALESCE(s.money, 0.0) AS money
+                        CASE WHEN s.symbol IS NULL THEN 0.0 ELSE s.money END AS money
                     FROM lifespans ls
                     CROSS JOIN _trade_cal tc
                     LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = tc.date
                     WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
+                      AND (s.symbol IS NOT NULL OR EXISTS (
+                          SELECT 1 FROM stock_status h WHERE h.status_type='HALT'
+                          AND coalesce(TRY_CAST(h.date AS DATE),try_strptime(h.date,'%Y%m%d')::DATE)=tc.date
+                          AND json_contains(TRY_CAST(h.symbols AS JSON),to_json(ls.symbol))))
                 ),
                 gap_filled AS (
                     SELECT
@@ -2552,12 +2580,13 @@ class DuckDBWriter:
                     wl.date::TIMESTAMP_NS AS date,
                     wl.open, wl.close, wl.high, wl.low,
                     CASE
+                        WHEN wl.stored_preclose > 0 AND isfinite(wl.stored_preclose) THEN wl.stored_preclose
                         WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
                              AND wl.volume > 0 THEN
                             ROUND(
                                 (wl.lag_close - adj.total_deduction)
                                 / adj.total_divisor,
-                                2)
+                                CASE WHEN regexp_full_match(wl.symbol, '{ETF_SYMBOL_PATTERN}') THEN 3 ELSE 2 END)
                         ELSE COALESCE(wl.lag_close, wl.stored_preclose)
                     END AS preclose,
                     wl.volume, wl.money
@@ -2583,286 +2612,46 @@ class DuckDBWriter:
                     code_prefix = symbol[:3]
                     is_chinext_star = code_prefix in ("300", "301", "688", "689")
 
-                    if is_chinext_star:
+                    if is_exchange_etf(symbol):
+                        limit_sql = "raw.high_limit, raw.low_limit,"
+                    elif is_chinext_star:
                         limit_sql = """
-                            CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 1.20, 2)
-                                 ELSE ROUND(preclose * 1.10, 2) END AS high_limit,
-                            CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 0.80, 2)
-                                 ELSE ROUND(preclose * 0.90, 2) END AS low_limit,
+                            COALESCE(raw.high_limit, CASE WHEN f.date >= '2020-08-24' THEN ROUND(f.preclose * 1.20, 2)
+                                 ELSE ROUND(f.preclose * 1.10, 2) END) AS high_limit,
+                            COALESCE(raw.low_limit, CASE WHEN f.date >= '2020-08-24' THEN ROUND(f.preclose * 0.80, 2)
+                                 ELSE ROUND(f.preclose * 0.90, 2) END) AS low_limit,
                         """
                     else:
                         limit_sql = """
-                            ROUND(preclose * 1.10, 2) AS high_limit,
-                            ROUND(preclose * 0.90, 2) AS low_limit,
+                            COALESCE(raw.high_limit, ROUND(f.preclose * 1.10, 2)) AS high_limit,
+                            COALESCE(raw.low_limit, ROUND(f.preclose * 0.90, 2)) AS low_limit,
                         """
 
                     self.conn.execute(f"""
                         COPY (
-                            SELECT date, open, close, high, low,
+                            SELECT f.date, f.open, f.close, f.high, f.low,
                                 {limit_sql}
-                                preclose, volume, money
-                            FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
+                                f.preclose, f.volume, f.money
+                            FROM _stocks_filled f LEFT JOIN stocks raw USING(symbol,date)
+                            WHERE f.symbol = '{se}' ORDER BY f.date
                         ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
                     """)
 
             self.conn.execute("DROP TABLE IF EXISTS _stocks_filled")
+            if progress_callback:
+                progress_callback(offset + len(batch), len(symbols))
 
         self.conn.execute("DROP TABLE IF EXISTS _trade_cal")
         logger.info(f"Exported {len(symbols)} stocks files in {time.time() - t0:.1f}s")
 
     def _ensure_stock_metadata_from_pool(self) -> None:
-        """Populate stock_metadata with accurate listed/de_listed dates.
-
-        Uses MIN(date) from stocks table as listed_date (99.8% match with
-        actual IPO dates). Sets de_listed_date to '2900-01-01' for active
-        stocks, or MAX(date) for stocks no longer in the mootdx stock list.
-        """
-        # Check current stock_metadata quality
-        current_count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock_metadata"
-        ).fetchone()[0]
-        valid_delisted_count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock_metadata "
-            "WHERE de_listed_date IS NOT NULL AND de_listed_date != ''"
-        ).fetchone()[0]
-        pool_count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock_pool"
-        ).fetchone()[0]
-
-        needs_population = (
-            current_count < pool_count or valid_delisted_count < 100
-        )
-
-        if not needs_population:
-            return
-
-        logger.info(
-            f"Populating stock_metadata: {current_count} records, "
-            f"{valid_delisted_count} with de_listed_date, pool has {pool_count}"
-        )
-
-        # Step 1: Get stock names from mootdx (current active stocks)
-        active_stock_names = {}
-        try:
-            from mootdx.quotes import Quotes
-
-            client = Quotes.factory(market="std", quiet=True)
-            sz_prefixes = ("000", "001", "002", "003", "300", "301", "302")
-            sh_prefixes = ("600", "601", "603", "605", "688", "689")
-
-            for market in [0, 1]:  # 0=SZ, 1=SH
-                try:
-                    df = client.stocks(market=market)
-                    if df is None or df.empty:
-                        continue
-                    for _, row in df.iterrows():
-                        code = str(row.get("code", "")).strip()
-                        # mootdx names carry fixed-buffer NUL padding
-                        name = str(row.get("name", "")).strip("\x00").strip()
-                        if not code or len(code) != 6:
-                            continue
-                        if market == 1 and code.startswith(("000", "399", "999")):
-                            continue
-                        if market == 0 and (
-                            code.startswith(
-                                ("15", "16", "50", "51", "52", "56", "58", "59")
-                            )
-                            or code.startswith("39")
-                        ):
-                            continue
-                        if market == 0 and code.startswith(sz_prefixes):
-                            active_stock_names[f"{code}.SZ"] = name
-                        elif market == 1 and code.startswith(sh_prefixes):
-                            active_stock_names[f"{code}.SS"] = name
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch stocks for market {market}: {e}"
-                    )
-            logger.info(f"Fetched {len(active_stock_names)} stock names from mootdx")
-        except Exception as e:
-            logger.warning(f"Failed to fetch stock names: {e}")
-
-        # Step 2: Get listed_date from MIN(date) in stocks table
-        # This matches actual IPO dates with 99.8% accuracy
-        # Filter to A-share codes only (exclude indices, B-shares, etc.)
-        stock_dates = {}
-        try:
-            dates_df = self.conn.execute(
-                "SELECT symbol, MIN(date) as listed_date, MAX(date) as last_date "
-                "FROM stocks "
-                "WHERE (symbol LIKE '000___.SZ' OR symbol LIKE '001___.SZ' "
-                "    OR symbol LIKE '002___.SZ' OR symbol LIKE '003___.SZ' "
-                "    OR symbol LIKE '300___.SZ' OR symbol LIKE '301___.SZ' "
-                "    OR symbol LIKE '302___.SZ' "
-                "    OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
-                "    OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
-                "    OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS') "
-                "GROUP BY symbol"
-            ).fetchdf()
-            for _, row in dates_df.iterrows():
-                stock_dates[row["symbol"]] = {
-                    "listed_date": str(row["listed_date"]),
-                    "last_date": str(row["last_date"]),
-                }
-            logger.info(
-                f"Got listed dates from stocks table for {len(stock_dates)} symbols"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to get dates from stocks table: {e}")
-
-        # Step 3: Determine de_listed_date and build batch
-        # Active in mootdx → '2900-01-01'
-        # Not active and last_date < latest → last_date (likely delisted)
-        active_set = set(active_stock_names.keys())
-        max_date_val = self.conn.execute(
-            "SELECT MAX(date) FROM stocks"
-        ).fetchone()[0]
-        latest_date_str = str(max_date_val) if max_date_val is not None else ""
-
-        # Pre-load existing blocks to preserve them
-        existing_blocks = {}
-        try:
-            blocks_df = self.conn.execute(
-                "SELECT symbol, blocks FROM stock_metadata WHERE blocks IS NOT NULL"
-            ).fetchdf()
-            for _, row in blocks_df.iterrows():
-                existing_blocks[row["symbol"]] = row["blocks"]
-        except Exception:
-            pass
-
-        # Build batch rows
-        all_symbols = set(stock_dates.keys()) | active_set
-        rows = []
-        for symbol in all_symbols:
-            dates = stock_dates.get(symbol, {})
-            listed_date = dates.get("listed_date")
-            last_date = dates.get("last_date")
-
-            # Zero-history symbols (never listed) get the far-future sentinel:
-            # check_integrity._is_listed treats an empty listed_date as listed,
-            # which would fail the publish gate and the COS delta build.
-            if not listed_date:
-                listed_date = "2900-01-01"
-
-            if symbol in active_set:
-                de_listed_date = "2900-01-01"
-            elif last_date and last_date < latest_date_str:
-                de_listed_date = last_date
-            else:
-                de_listed_date = "2900-01-01"
-
-            rows.append((
-                symbol,
-                active_stock_names.get(symbol),
-                listed_date,
-                de_listed_date,
-                existing_blocks.get(symbol),
-            ))
-
-        # Batch insert via temp table
-        batch_df = pd.DataFrame(
-            rows,
-            columns=["symbol", "stock_name", "listed_date", "de_listed_date", "blocks"],
-        )
-        self.conn.register("_stock_metadata_batch", batch_df)
-        try:
-            # 已有名字保留（redis sync 填写的名字为权威），仅缺失时用 mootdx 补
-            self.conn.execute(
-                "INSERT INTO stock_metadata "
-                "(symbol, stock_name, listed_date, de_listed_date, blocks) "
-                "SELECT symbol, stock_name, listed_date, de_listed_date, blocks "
-                "FROM _stock_metadata_batch "
-                "ON CONFLICT (symbol) DO UPDATE SET "
-                "stock_name = COALESCE(NULLIF(stock_metadata.stock_name, ''), "
-                "excluded.stock_name), "
-                "listed_date = excluded.listed_date, "
-                "de_listed_date = excluded.de_listed_date, "
-                "blocks = excluded.blocks"
-            )
-        finally:
-            self.conn.unregister("_stock_metadata_batch")
-
-        logger.info(
-            f"stock_metadata population complete: {len(rows)} records, "
-            f"{len(active_set)} active stocks"
-        )
-
-    def _enrich_halt_status_from_volume(self) -> None:
-        """Enrich stock_status HALT entries using volume=0 from stocks table.
-
-        For each trading date, marks A-share stocks with volume=0 (within
-        their lifespan) as HALT. Merges with any existing BaoStock-sourced
-        HALT data already in the stock_status table.
-        """
-        # 客户 redis 权威部署（SIMTRADE_REDIS_AUTHORITATIVE=1）：stock_status 由
-        # index-sync 从客户 redis 覆盖，volume=0 并集会污染平台真实停牌口径。
-        if os.environ.get("SIMTRADE_REDIS_AUTHORITATIVE") == "1":
-            return
-        import time
-        t0 = time.time()
-
-        # Use a temp table to avoid complex INSERT OR REPLACE with aggregation
-        self.conn.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _halt_enriched AS
-            WITH lifespans AS (
-                SELECT s0.symbol, MIN(s0.date) AS first_date, MAX(s0.date) AS last_date
-                FROM stocks s0
-                WHERE {self._cn_stock_filter_sql("s0.symbol")}
-                GROUP BY s0.symbol
-            ),
-            trade_dates AS (
-                SELECT DISTINCT date FROM stocks
-            ),
-            vol_halted AS (
-                SELECT td.date, ls.symbol
-                FROM trade_dates td
-                CROSS JOIN lifespans ls
-                LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = td.date
-                WHERE td.date >= ls.first_date AND td.date <= ls.last_date
-                  AND (s.volume IS NULL OR s.volume = 0)
-            ),
-            existing_halt AS (
-                SELECT STRPTIME(date, '%Y%m%d')::DATE AS date,
-                       unnest(symbols::JSON::VARCHAR[]) AS symbol
-                FROM stock_status
-                WHERE status_type = 'HALT'
-            ),
-            combined AS (
-                SELECT date, symbol FROM vol_halted
-                UNION
-                SELECT date, symbol FROM existing_halt
-            )
-            SELECT
-                STRFTIME(date, '%Y%m%d') AS date,
-                'HALT' AS status_type,
-                to_json(list(symbol ORDER BY symbol)) AS symbols
-            FROM combined
-            GROUP BY date
+        """Ensure local symbol rows exist without inventing lifecycle facts."""
+        self.conn.execute("""
+            INSERT INTO stock_metadata(symbol)
+            SELECT symbol FROM stock_pool
+            UNION SELECT DISTINCT symbol FROM stocks
+            ON CONFLICT(symbol) DO NOTHING
         """)
-
-        # Replace existing HALT entries atomically
-        self.begin()
-        try:
-            self.conn.execute(
-                "DELETE FROM stock_status WHERE status_type = 'HALT'"
-            )
-            self.conn.execute("""
-                INSERT INTO stock_status (date, status_type, symbols)
-                SELECT date, status_type, symbols FROM _halt_enriched
-            """)
-            self.commit()
-        except Exception:
-            self.rollback()
-            raise
-        self.conn.execute("DROP TABLE IF EXISTS _halt_enriched")
-
-        halt_count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock_status WHERE status_type = 'HALT'"
-        ).fetchone()[0]
-        logger.info(
-            f"Enriched HALT status from volume data: "
-            f"{halt_count} date entries in {time.time() - t0:.1f}s"
-        )
 
     def _export_metadata(self, output_dir: Path, market: str = "cn") -> None:
         """Export metadata tables using DuckDB COPY"""
@@ -2879,51 +2668,19 @@ class DuckDBWriter:
                 (FORMAT PARQUET, CODEC 'ZSTD')
             """)
 
-        # benchmark.parquet — prefer stocks table for full history,
-        # fall back to benchmark table for recent data only
-        benchmark_symbol = BENCHMARK_CONFIG["default_index"]
-        has_stocks_benchmark = self.conn.execute(
-            f"SELECT COUNT(*) FROM stocks WHERE symbol = '{benchmark_symbol}'"
-        ).fetchone()[0]
-
-        if has_stocks_benchmark > 0:
+        # Merge local histories, preferring stock-table bars for overlapping dates.
+        benchmark_query = self._benchmark_export_query()
+        count, min_date = self.conn.execute(
+            f"SELECT COUNT(*), MIN(date)::VARCHAR FROM ({benchmark_query})"
+        ).fetchone()
+        if count:
             self.conn.execute(f"""
-                COPY (
-                    SELECT date, open, high, low, close, volume,
-                           COALESCE(money, 0.0) AS money
-                    FROM stocks
-                    WHERE symbol = '{benchmark_symbol}'
-                    ORDER BY date
-                ) TO '{output_dir / "benchmark.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+                COPY ({benchmark_query} ORDER BY date)
+                TO '{output_dir / "benchmark.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
             """)
-        else:
-            count = self.conn.execute(
-                "SELECT COUNT(*) FROM benchmark"
-            ).fetchone()[0]
-            if count > 0:
-                self.conn.execute(f"""
-                    COPY (SELECT * FROM benchmark ORDER BY date)
-                    TO '{output_dir / "benchmark.parquet"}'
-                    (FORMAT PARQUET, CODEC 'ZSTD')
-                """)
-
-        # Fail closed when the CN benchmark export is missing or truncated.
-        # TDX index bars are depth-limited, so a short history here means the
-        # released package would silently drop early benchmark dates.
         if market == "cn":
-            benchmark_path = output_dir / "benchmark.parquet"
-            if not benchmark_path.exists():
+            if not count:
                 raise ValueError("benchmark export missing for CN market")
-            # Query the export source rather than re-reading the written file
-            if has_stocks_benchmark > 0:
-                min_date = self.conn.execute(
-                    f"SELECT MIN(date)::VARCHAR FROM stocks "
-                    f"WHERE symbol = '{benchmark_symbol}'"
-                ).fetchone()[0]
-            else:
-                min_date = self.conn.execute(
-                    "SELECT MIN(date)::VARCHAR FROM benchmark"
-                ).fetchone()[0]
             if not benchmark_history_ok(min_date):
                 raise ValueError(
                     f"benchmark export truncated: earliest date {min_date}, "
@@ -2956,13 +2713,13 @@ class DuckDBWriter:
                 (FORMAT PARQUET, CODEC 'ZSTD')
             """)
 
-        # stock_status.parquet — enrich HALT data from volume before export
-        self._enrich_halt_status_from_volume()
+        # Export only stored status facts; absent rows and zero volume do not prove HALT.
         count = self.conn.execute("SELECT COUNT(*) FROM stock_status").fetchone()[0]
         if count > 0:
             self.conn.execute(f"""
                 COPY (
-                    SELECT date, status_type, symbols::JSON::VARCHAR[] AS symbols
+                    SELECT strftime(coalesce(TRY_CAST(date AS DATE),try_strptime(date,'%Y%m%d')::DATE),'%Y%m%d') AS date,
+                           status_type, symbols::JSON::VARCHAR[] AS symbols
                     FROM stock_status
                 ) TO '{output_dir / "stock_status.parquet"}'
                 (FORMAT PARQUET, CODEC 'ZSTD')

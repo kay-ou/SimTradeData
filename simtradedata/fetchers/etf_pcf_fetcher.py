@@ -73,15 +73,16 @@ def parse_pcf(content: bytes, symbol: str) -> pd.DataFrame:
         source = component.findtext("UnderlyingSecurityIDSource" if szse else "UnderlyingSecurityID", "").strip()
         if not security or not source:
             raise ValueError("PCF component lacks code or market")
-        quantity = number(component, "ComponentShare" if szse else "Quantity", required=True)
-        if quantity < 0:
+        flag = component.findtext("SubstituteFlag" if szse else "SubstitutionFlag", "").strip()
+        quantity = number(component, "ComponentShare" if szse else "Quantity", required=not (szse and flag == "2"))
+        if quantity is not None and quantity < 0:
             raise ValueError("Negative PCF component quantity")
         row = {**info, "code": security, "market_code": source,
                "security_name": component.findtext("UnderlyingSymbol" if szse else "InstrumentName", ""),
                "code_num": quantity, "is_cash_component": szse and security == "159900"}
         suffix = {"101": "SS", "102": "SZ"}.get(source)
         row["symbol"] = f"{security}.{suffix}" if suffix and re.fullmatch(r"\d{6}", security) and not row["is_cash_component"] else None
-        row["substitution_flag"] = component.findtext("SubstituteFlag" if szse else "SubstitutionFlag", "")
+        row["substitution_flag"] = flag
         for field, tag in {
             "creation_premium_ratio": "PremiumRatio" if szse else "CreationPremiumRate",
             "redemption_discount_ratio": "DiscountRatio" if szse else "RedemptionDiscountRate",
@@ -160,6 +161,10 @@ class EtfPcfFetcher(BaseFetcher):
             ).content
         result = parse_pcf(content, symbol)
         actual = pd.Timestamp(result.iloc[0]["date"]).date()
-        if actual > today or (requested is not None and actual != requested):
+        if actual > today:
+            raise ValueError("PCF trading date differs from requested date")
+        if requested is not None and actual != requested:
+            if market == "SS":
+                return pd.DataFrame()
             raise ValueError("PCF trading date differs from requested date")
         return result

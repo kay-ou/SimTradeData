@@ -73,8 +73,7 @@ def test_ptrade_subset_does_not_invent_fields_or_duplicate_cash_semantics(monkey
 def test_sse_rejects_latest_file_for_a_different_requested_date(monkeypatch):
     fetcher = EtfPcfFetcher()
     monkeypatch.setattr(fetcher, "_get", lambda *args, **kwargs: Mock(content=sample("510300.SS")))
-    with pytest.raises(ValueError, match="trading date differs"):
-        fetcher._download("510300.SS", pd.Timestamp("2026-11-19").date(), pd.Timestamp("2026-11-20").date())
+    assert fetcher._download("510300.SS", pd.Timestamp("2026-11-19").date(), pd.Timestamp("2026-11-20").date()).empty
 
 
 def test_szse_index_chooses_latest_nonfuture_announcement(monkeypatch):
@@ -175,3 +174,43 @@ def test_missing_historical_announcement_does_not_block_latest_request(monkeypat
     fetcher._cooldown.record_failure.assert_not_called()
     fetcher._circuit_breaker.record_failure.assert_not_called()
     assert fetcher._circuit_breaker.record_success.call_count == 2
+
+
+@pytest.mark.parametrize("flag", ["0", "1", "2"])
+def test_szse_missing_quantity_only_allowed_for_cash_substitution(flag):
+    from xml.etree import ElementTree as ET
+    root = ET.fromstring(sample("159919.SZ"))
+    for node in root.iter():
+        node.tag = node.tag.rsplit("}", 1)[-1]
+    component = root.find("./Components/Component")
+    component.find("SubstituteFlag").text = flag
+    component.remove(component.find("ComponentShare"))
+    if flag == "2":
+        data = parse_pcf(ET.tostring(root), "159919.SZ")
+        assert len(data) == 301 and pd.isna(data.iloc[0]["code_num"])
+    else:
+        with pytest.raises(ValueError, match="ComponentShare"):
+            parse_pcf(ET.tostring(root), "159919.SZ")
+
+
+def test_sse_date_mismatch_records_success_not_source_failure(monkeypatch):
+    from simtradedata.fetchers.etf_pcf_fetcher import PcfNotAvailable
+    fetcher = EtfPcfFetcher()
+    fetcher._cooldown = Mock()
+    fetcher._cooldown.is_in_cooldown.return_value = False
+    fetcher._circuit_breaker = Mock()
+    fetcher._circuit_breaker.is_available.return_value = True
+    monkeypatch.setattr(fetcher, "_get", lambda *a, **k: Mock(content=sample("510300.SS")))
+    with fetcher:
+        with pytest.raises(PcfNotAvailable):
+            fetcher.fetch_pcf("510300.SS", "2026-11-19")
+        assert len(fetcher.fetch_pcf("510300.SS", "2026-11-20")) == 300
+    fetcher._circuit_breaker.record_failure.assert_not_called()
+    fetcher._cooldown.record_failure.assert_not_called()
+
+
+def test_future_sse_pcf_is_still_rejected(monkeypatch):
+    fetcher = EtfPcfFetcher()
+    monkeypatch.setattr(fetcher, "_get", lambda *a, **k: Mock(content=sample("510300.SS")))
+    with pytest.raises(ValueError):
+        fetcher._download("510300.SS", None, pd.Timestamp("2026-11-19").date())

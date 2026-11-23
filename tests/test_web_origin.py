@@ -59,3 +59,24 @@ def test_local_ui_and_cli_remain_allowed(host, port, with_origin):
     status, manager = post(headers, port=port)
     assert status == 200
     manager.preview.assert_called_once_with({"plan_id": "test"})
+
+
+@pytest.mark.parametrize("headers,expected", [
+    ("Host: attacker.example:8765\r\n", 403),
+    ("Host: localhost:8765\r\nHost: attacker.example:8765\r\n", 403),
+    ("", 403),
+    ("Host: localhost:8765\r\n", 200),
+    ("Host: 127.0.0.1:8765\r\n", 200),
+])
+@pytest.mark.parametrize("path", ["/api/service", "/api/exports/cn/download"])
+def test_get_host_boundary(headers, expected, path, tmp_path, monkeypatch):
+    manager = Mock(data_dir=tmp_path)
+    from simtradedata.web import exports
+    package = tmp_path / "cn.zip"
+    package.write_bytes(b"local package")
+    monkeypatch.setattr(exports, "artifact_path", lambda *a: package)
+    raw = f"GET {path} HTTP/1.1\r\n{headers}\r\n".encode()
+    output = BytesIO()
+    connection = SimpleNamespace(makefile=lambda *_: BytesIO(raw), sendall=output.write)
+    handler_for(manager)(connection, ("127.0.0.1", 12345), SimpleNamespace(server_address=("127.0.0.1", 8765)))
+    assert int(output.getvalue().split()[1]) == expected

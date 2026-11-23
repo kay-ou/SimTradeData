@@ -9,6 +9,7 @@ with automatic upsert (INSERT OR REPLACE) for deduplication.
 import hashlib
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -583,6 +584,10 @@ class DuckDBWriter:
                 """)
                 logger.info("Added fundamentals column %s", column)
 
+        for column in ("roa_derived", "roa_ttm_derived"):
+            if column not in column_names:
+                self.conn.execute(f"ALTER TABLE fundamentals ADD COLUMN {column} BOOLEAN")
+
     def _migrate_stock_metadata(self) -> None:
         """Migrate stock_metadata to keep official BaoStock type/status fields."""
         columns = self.conn.execute("""
@@ -858,6 +863,10 @@ class DuckDBWriter:
             SELECT {cols_str} FROM df
             {conflict_clause}
         """)
+        if table == "fundamentals" and "roa" in df.columns and "roa_ttm" not in df.columns:
+            self.conn.execute("""UPDATE fundamentals SET roa_ttm=NULL, roa_ttm_derived=TRUE
+                WHERE symbol IN (SELECT DISTINCT symbol FROM df)
+                  AND roa_ttm_derived IS DISTINCT FROM FALSE""")
         self._record_symbol_changes(table, df)
 
     def write_market_data(
@@ -1032,6 +1041,9 @@ class DuckDBWriter:
         columns = _FUNDAMENTAL_WRITE_COLUMNS
         available = [c for c in columns if c in df.columns]
         df = df[available]
+        for field in ("roa", "roa_ttm"):
+            if field in df.columns:
+                df[field + "_derived"] = False
 
         if len(df) > 1:
             df = df.drop_duplicates()
@@ -1403,6 +1415,53 @@ class DuckDBWriter:
     # Derived fields
     # ========================================
 
+    def _restore_legacy_roa(self, symbol_filter: str) -> None:
+        """Resolve suspicious untracked old-formula values from local source files."""
+        suspects = self.conn.execute(f"""
+            SELECT symbol, date FROM fundamentals
+            WHERE roa_derived IS NULL AND roa IS NOT NULL
+              AND roe IS NOT NULL AND debt_equity_ratio IS NOT NULL
+              AND debt_equity_ratio NOT IN (-100, -1, 0)
+              AND isfinite(roa) AND isfinite(roe) AND isfinite(debt_equity_ratio)
+              AND abs(roa - roe / (1 + debt_equity_ratio)) <= 1e-10 * greatest(1, abs(roa))
+              AND abs(roa - roe / (1 + debt_equity_ratio / 100)) > 1e-10
+              {symbol_filter}
+        """).fetchall()
+        if not suspects:
+            return
+        from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
+        directory = self.db_path.parent / "mootdx_financial"
+        reports, restored = {}, []
+        for symbol, day in suspects:
+            filename = f"gpcw{day.strftime('%Y%m%d')}.zip"
+            if filename not in reports:
+                if not (directory / filename).is_file():
+                    raise ValueError(f"旧 ROA 来源无法确认，缺少 {filename}；请重新导入季度财务数据后再导出")
+                fetcher = MootdxAffairFetcher(download_dir=str(directory))
+                report = fetcher._convert_to_ptrade_format(fetcher.parse_local(filename), fields=["roa"])
+                if not {"code", "end_date", "roa"}.issubset(report.columns):
+                    raise ValueError(f"{filename} 缺少源 ROA；请重新导入季度财务数据后再导出")
+                report = report[["code", "end_date", "roa"]].copy()
+                report["code"] = report["code"].astype(str).str.zfill(6)
+                report["end_date"] = pd.to_datetime(report["end_date"]).dt.date
+                reports[filename] = report.set_index(["code", "end_date"])["roa"]
+            value = reports[filename].get((symbol[:6], day))
+            if isinstance(value, pd.Series) or pd.isna(value) or not math.isfinite(float(value)):
+                raise ValueError(f"{symbol} {day} 缺少唯一有效的源 ROA；请重新导入季度财务数据后再导出")
+            restored.append({"symbol": symbol, "date": day, "roa": float(value)})
+        # Validate all source evidence before changing any stored values.
+        frame = pd.DataFrame(restored)
+        self.conn.register("_restored_roa", frame)
+        try:
+            self.conn.execute("""UPDATE fundamentals f SET roa=r.roa, roa_derived=FALSE
+                FROM _restored_roa r WHERE f.symbol=r.symbol AND f.date=r.date""")
+            self.conn.execute("""UPDATE fundamentals SET roa_ttm=NULL, roa_ttm_derived=TRUE
+                WHERE symbol IN (SELECT symbol FROM _restored_roa)
+                  AND roa_ttm_derived IS DISTINCT FROM FALSE""")
+            self._record_symbol_changes("fundamentals", frame)
+        finally:
+            self.conn.unregister("_restored_roa")
+
     def compute_derived_fundamentals(self, symbols: list[str] | None = None) -> None:
         """
         Fill roa, roe_ttm, roa_ttm from existing fundamentals data.
@@ -1415,20 +1474,24 @@ class DuckDBWriter:
         delta exports to avoid full-table window function recomputation).
         """
         symbol_filter = ""
-        sub_where = "WHERE roe IS NOT NULL OR roa IS NOT NULL"
+        sub_where = "WHERE roe IS NOT NULL OR roa IS NOT NULL OR roa_ttm_derived=TRUE"
         if symbols:
             symbols_clause = self._symbols_in_clause(symbols)
             symbol_filter = f"AND symbol IN ({symbols_clause})"
-            sub_where = f"WHERE fundamentals.symbol IN ({symbols_clause}) AND (roe IS NOT NULL OR roa IS NOT NULL)"
+            sub_where = f"WHERE fundamentals.symbol IN ({symbols_clause}) AND (roe IS NOT NULL OR roa IS NOT NULL OR roa_ttm_derived=TRUE)"
+
+        self._restore_legacy_roa(symbol_filter)
 
         # Convert percent debt/equity into a ratio before deriving missing ROA.
         self.conn.execute(f"""
             UPDATE fundamentals
-            SET roa = roe / (1 + debt_equity_ratio / 100)
-            WHERE roe IS NOT NULL
-              AND debt_equity_ratio IS NOT NULL
-              AND debt_equity_ratio != -100
-              AND roa IS NULL
+            SET roa = CASE WHEN roe IS NOT NULL AND debt_equity_ratio IS NOT NULL
+                                AND isfinite(roe) AND isfinite(debt_equity_ratio)
+                                AND debt_equity_ratio != -100
+                           THEN roe / (1 + debt_equity_ratio / 100) END,
+                roa_derived = TRUE
+            WHERE ((roa IS NULL AND roe IS NOT NULL AND debt_equity_ratio IS NOT NULL
+                    AND debt_equity_ratio != -100) OR roa_derived = TRUE)
               {symbol_filter}
         """)
 
@@ -1442,13 +1505,11 @@ class DuckDBWriter:
         self.conn.execute(f"""
             UPDATE fundamentals f
             SET
-                roe_ttm = sub.roe_ttm,
-                roa_ttm = sub.roa_ttm
+                roe_ttm = sub.roe_ttm
             FROM (
                 SELECT
                     symbol, date,
-                    AVG(roe) OVER w AS roe_ttm,
-                    AVG(roa) OVER w AS roa_ttm
+                    AVG(roe) OVER w AS roe_ttm
                 FROM fundamentals
                 {sub_where}
                 WINDOW w AS (
@@ -1460,6 +1521,18 @@ class DuckDBWriter:
             WHERE f.symbol = sub.symbol
               AND f.date = sub.date
               AND f.roe_ttm IS NULL
+              {outer_symbol_filter}
+        """)
+
+        self.conn.execute(f"""
+            UPDATE fundamentals f SET roa_ttm=sub.roa_ttm, roa_ttm_derived=TRUE
+            FROM (
+                SELECT symbol, date, AVG(roa) OVER (
+                    PARTITION BY symbol ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                ) AS roa_ttm FROM fundamentals {sub_where}
+            ) sub
+            WHERE f.symbol=sub.symbol AND f.date=sub.date
+              AND (f.roa_ttm IS NULL OR f.roa_ttm_derived=TRUE)
               {outer_symbol_filter}
         """)
 
@@ -1552,10 +1625,6 @@ class DuckDBWriter:
     ) -> None:
         """Export changed rows for client-side delta merge."""
         output_path = Path(output_dir)
-        if output_path.exists():
-            safe_rmtree(output_path)
-
-        output_path.mkdir(parents=True, exist_ok=True)
         target_version = target_version or self.get_max_date("stocks")
         if not target_version:
             raise ValueError("target_version is required when stocks table is empty")
@@ -1564,6 +1633,13 @@ class DuckDBWriter:
                 f"target_version ({target_version}) must be newer than "
                 f"base_version ({base_version})"
             )
+
+        self._restore_legacy_roa("")
+
+        if output_path.exists():
+            safe_rmtree(output_path)
+
+        output_path.mkdir(parents=True, exist_ok=True)
 
         # Only recompute derived fundamentals for symbols that changed,
         # avoiding a full-table window function scan for every delta export.

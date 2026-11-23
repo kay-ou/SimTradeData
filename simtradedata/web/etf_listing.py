@@ -47,6 +47,8 @@ def delisting_dates(content, symbol):
     code = symbol[:6]
     if not re.search(r'(?:基金(?:主|交易)?代码|证券代码|交易代码)[：:]?' + code + r'(?!\d)', text):
         raise ValueError('ETF delisting announcement does not identify the requested security')
+    if re.search(r'(?:拟|计划|预计|可能|申请|申请获准)终止上市', text):
+        return None
     pattern = r'(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?'
     dates = {date(*map(int, match)).isoformat() for match in re.findall(
         r'终止上市(?:日期|日)[：:]?(?:为)?' + pattern, text)}
@@ -98,6 +100,8 @@ def fetch_etf_listing_info(symbol):
             return {**base, 'state': 'not_established', 'listed_date': None,
                     'source_url': f"https://fund.eastmoney.com/gonggao/{code},{notice['ID']}.html",
                     'detail': '公告显示募集未成功，未形成上市交易历史'}
+        if re.search(r'(?:拟|计划|预计|可能|申请)终止上市', heading):
+            continue
         terminal = '终止上市' in heading
         if not terminal and any(term in heading for term in ['暂停','终止','取消','退市','停牌']):
             continue
@@ -161,6 +165,8 @@ def store_delisting(writer, info):
     latest = writer.conn.execute('SELECT MAX(date) FROM stocks WHERE symbol=? AND close>0', [info['symbol']]).fetchone()[0]
     if latest and latest >= out:
         raise ValueError('ETF delisting date conflicts with stored market bars')
+    if halt and latest and latest >= halt:
+        raise ValueError('ETF suspension interval conflicts with stored market bars')
     days = trading_dates(writer.conn, halt.isoformat(), out.isoformat()) if halt else []
     writer.begin()
     try:

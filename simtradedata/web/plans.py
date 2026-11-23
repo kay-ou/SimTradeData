@@ -109,8 +109,8 @@ def build_plan(data_dir: Path, body):
             units = pending
     else:
         days = coverage["calendar_dates"]
-        needs_calendar = request["mode"] == "auto" and not calendar_covers(data_dir, request["start_date"], request["end_date"])
-        if not days and request["mode"] != "auto":
+        needs_calendar = not calendar_covers(data_dir, request["start_date"], request["end_date"])
+        if needs_calendar and request["mode"] != "auto":
             raise ValueError("本地没有所选范围的交易日历，请先同步交易日历")
         units = [] if needs_calendar else [f"{symbol}|{day}" for symbol in request["symbols"] for day in days]
         if request["mode"] == "auto" and not needs_calendar:

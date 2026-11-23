@@ -125,3 +125,11 @@ def test_historical_interfaces_preserve_market_and_raw_direction():
     minutes = fetcher.fetch_history_minutes("000001.SS", "2026-11-20")
     api.get_history_minute_time_data.assert_called_once_with(1, "000001", 20261120)
     assert set(minutes.columns) == {"price", "vol"}
+
+
+@pytest.mark.parametrize("symbol,market", [("000001.SS", 1), ("000001.SZ", 0), ("600000.SS", 1)])
+def test_history_minutes_preserves_explicit_market(symbol, market):
+    api = Mock()
+    api.get_history_minute_time_data.return_value = [{"price": 1}]
+    assert not fetcher_with(api).fetch_history_minutes(symbol, "2026-11-20").empty
+    api.get_history_minute_time_data.assert_called_once_with(market, symbol[:6], 20261120)

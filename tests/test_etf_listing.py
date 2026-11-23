@@ -121,3 +121,20 @@ def test_indefinite_suspension_date_belongs_to_its_clause(tmp_path):
         writer.conn.execute("INSERT INTO trade_days VALUES ('2026-10-15'),('2026-11-13'),('2026-11-16')")
         store_delisting(writer, {'symbol':'159503.SZ', 'name':'test', **info})
         assert writer.conn.execute('SELECT date FROM stock_status ORDER BY date').fetchall() == [('20261116',)]
+
+
+@pytest.mark.parametrize("prefix", ["拟", "计划", "预计", "申请"])
+def test_proposed_delisting_is_not_confirmed(prefix):
+    from simtradedata.web.etf_listing import delisting_dates
+    assert delisting_dates(f"基金代码：159503。{prefix}终止上市日期为2026年11月20日。", "159503.SZ") is None
+
+
+def test_halt_conflicting_with_trades_is_rejected_without_writes(tmp_path):
+    from simtradedata.web.etf_listing import store_delisting
+    from simtradedata.writers.duckdb_writer import DuckDBWriter
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("INSERT INTO stocks(symbol,date,close) VALUES ('159503.SZ','2026-11-19',1)")
+        with pytest.raises(ValueError, match="suspension interval"):
+            store_delisting(writer, {"symbol":"159503.SZ", "name":"test", "de_listed_date":"2026-11-20", "halt_start":"2026-11-18"})
+        assert writer.conn.execute("SELECT COUNT(*) FROM stock_metadata").fetchone()[0] == 0
+        assert writer.conn.execute("SELECT COUNT(*) FROM stock_status").fetchone()[0] == 0

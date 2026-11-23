@@ -38,7 +38,18 @@ def handler_for(manager, health=None, restart_enabled=False):
             self.end_headers()
             self.wfile.write(body)
 
+        def valid_host(self):
+            port = self.server.server_address[1]
+            allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+            if port == 80:
+                allowed_hosts.update({"localhost", "127.0.0.1"})
+            hosts = self.headers.get_all("Host", [])
+            return len(hosts) == 1 and hosts[0] in allowed_hosts
+
         def do_GET(self):
+            if not self.valid_host():
+                self.respond(403, {"error": "仅接受本地管理页面请求"})
+                return
             parsed = urlsplit(self.path)
             try:
                 if parsed.path == "/api/service":
@@ -99,13 +110,9 @@ def handler_for(manager, health=None, restart_enabled=False):
                 self.respond(503, {"error": f"数据读取失败：{error}"})
 
         def do_POST(self):
-            port = self.server.server_address[1]
-            allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
-            if port == 80:
-                allowed_hosts.update({"localhost", "127.0.0.1"})
             hosts = self.headers.get_all("Host", [])
             origins = self.headers.get_all("Origin", [])
-            if (len(hosts) != 1 or hosts[0] not in allowed_hosts
+            if (not self.valid_host()
                     or self.headers.get_all("X-SimTrade-UI", []) != ["1"]
                     or (origins and origins != [f"http://{hosts[0]}"])):
                 self.respond(403, {"error": "仅接受管理页面发起的操作"})

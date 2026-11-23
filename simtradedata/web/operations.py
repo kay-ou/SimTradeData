@@ -206,7 +206,12 @@ def update_daily(data_dir, plan):
             def check_gaps(symbols, start, end):
                 checking = time.perf_counter()
                 try:
-                    return daily_etf_gaps(importer.writer.conn, symbols, start, end, include_dates=True)
+                    gaps = daily_etf_gaps(importer.writer.conn, symbols, start, end, include_dates=True)
+                    for symbol in symbols:
+                        invalid = [str(day) for day in invalid_dates.get(symbol, []) if start <= str(day) <= end]
+                        if invalid:
+                            gaps[symbol] = sorted(set(gaps.get(symbol, [])) | set(invalid))
+                    return gaps
                 finally:
                     timings["etf_check"] += time.perf_counter() - checking
             from simtradedata.web.etf_listing import EtfNotTradingInRange

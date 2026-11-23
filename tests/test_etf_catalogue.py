@@ -153,6 +153,8 @@ def test_selected_daily_missing_from_zip_uses_mootdx_without_rescaling(tmp_path,
     from simtradedata.web.plans import build_plan
 
     seed(tmp_path)
+    with DuckDBWriter(str(tmp_path / 'cn.duckdb')) as writer:
+        writer.conn.execute("INSERT INTO stock_metadata(symbol,listed_date) VALUES ('551000.SS','2026-11-19')")
     monkeypatch.setattr(download_tdx_day, 'get_remote_file_info', lambda *a: pytest.fail('cache covers dates'))
     calls = []
     monkeypatch.setattr(MootdxFetcher, '__enter__', lambda self: self)
@@ -195,6 +197,8 @@ def test_missing_etf_empty_response_is_not_reported_as_success(tmp_path, monkeyp
     from simtradedata.web.operations import update_daily
     from simtradedata.web.plans import build_plan
     seed(tmp_path)
+    with DuckDBWriter(str(tmp_path / 'cn.duckdb')) as writer:
+        writer.conn.execute("INSERT INTO stock_metadata(symbol,listed_date) VALUES ('551000.SS','2026-11-19')")
     monkeypatch.setattr(download_tdx_day, 'get_remote_file_info', lambda *a: pytest.fail('cache covers dates'))
     monkeypatch.setattr(MootdxFetcher, '__enter__', lambda self: self)
     monkeypatch.setattr(MootdxFetcher, '__exit__', lambda *a: None)
@@ -246,13 +250,13 @@ def test_all_market_offline_does_not_discover_or_fetch_etfs(tmp_path, monkeypatc
     assert update_daily(tmp_path, build_plan(tmp_path, request(mode='reparse')))['failed_units'] == []
 
 
-def test_etf_db_gaps_include_internal_holes_but_not_pre_listing_days(tmp_path):
+def test_etf_db_gaps_include_history_before_first_unverified_bar(tmp_path):
     from simtradedata.web.etf_catalogue import daily_etf_gaps
     with DuckDBWriter(str(tmp_path / 'cn.duckdb')) as writer:
         writer.conn.execute("INSERT INTO trade_days VALUES ('2026-11-18'),('2026-11-19'),('2026-11-20')")
         writer.conn.execute("INSERT INTO stocks(symbol,date,close) VALUES ('551000.SS','2026-11-18',1),('551000.SS','2026-11-20',1),('551001.SS','2026-11-20',1)")
         gaps = daily_etf_gaps(writer.conn, ['551000.SS','551001.SS','551002.SS'], '2026-11-18','2026-11-20')
-    assert gaps == {'551000.SS': ('2026-11-19','2026-11-19'), '551002.SS': ('2026-11-18','2026-11-20')}
+    assert gaps == {'551000.SS': ('2026-11-19','2026-11-19'), '551001.SS': ('2026-11-18','2026-11-19'), '551002.SS': ('2026-11-18','2026-11-20')}
 
 
 def test_manager_does_not_claim_all_market_complete_when_etf_absent(tmp_path):
@@ -419,3 +423,49 @@ def test_confirmed_delisting_and_halt_skip_tail_without_quote_requests(tmp_path,
     result=update_daily(tmp_path,build_plan(tmp_path,request))
     assert result['failed_units']==[] and result['skipped']==1
     assert result['not_trading'][0]['state']=='delisted'
+
+
+
+def test_failed_expired_catalogue_refresh_keeps_cache_and_backs_off(tmp_path, monkeypatch):
+    from simtradedata.web import etf_catalogue
+    now = [100.0]
+    monkeypatch.setattr(etf_catalogue.time, "monotonic", lambda: now[0])
+    catalogue = EtfCatalogue(tmp_path, loader=lambda: ([item()], []))
+    assert wait_result(catalogue)["total"] == 1
+    calls = []
+    def fail():
+        calls.append(1)
+        raise ConnectionError("source offline")
+    catalogue.loader = fail
+    now[0] = 3701.0
+    assert wait_result(catalogue)["total"] == 1
+    for _ in range(5):
+        result = catalogue.get()
+        assert result["total"] == 1 and "offline" in result["error"]
+        assert not result["running"]
+    assert calls == [1]
+    catalogue.get(refresh=True)
+    wait_result(catalogue)
+    assert calls == [1, 1]
+    now[0] += 61
+    wait_result(catalogue)
+    assert calls == [1, 1, 1]
+
+
+def test_cached_catalogue_is_visible_during_refresh(tmp_path):
+    release, entered = threading.Event(), threading.Event()
+    catalogue = EtfCatalogue(tmp_path, loader=lambda: ([item()], []))
+    assert wait_result(catalogue)["total"] == 1
+    def load():
+        entered.set()
+        release.wait(2)
+        return [item()], []
+    catalogue.loader = load
+    catalogue.get(refresh=True)
+    assert entered.wait(1)
+    try:
+        result = catalogue.get()
+        assert result["running"] and result["total"] == 1
+    finally:
+        release.set()
+    assert wait_result(catalogue)["total"] == 1

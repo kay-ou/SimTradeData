@@ -143,3 +143,117 @@ def test_baostock_roa_and_ttm_survive_full_parquet_export(monkeypatch, tmp_path)
         for frame in [stored, exported]:
             assert frame["roa"].tolist() == pytest.approx([4.0, 6.0, 8.0, 10.0])
             assert frame["roa_ttm"].tolist() == pytest.approx([4.0, 5.0, 6.0, 7.0])
+
+
+
+def test_legacy_roa_is_restored_from_source_and_ttm_rebuilt(tmp_path, monkeypatch):
+    directory = tmp_path / "mootdx_financial"
+    directory.mkdir()
+    (directory / "gpcw20260930.zip").touch()
+    from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
+    monkeypatch.setattr(MootdxAffairFetcher, "parse_local", lambda *a: pd.DataFrame({"raw":[1]}))
+    monkeypatch.setattr(MootdxAffairFetcher, "_convert_to_ptrade_format", lambda *a, **k:
+        pd.DataFrame({"code":["600000"], "end_date":["2026-09-30"], "roa":[5.0]}))
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa,roe_ttm,roa_ttm)
+            VALUES ('600000.SS','2026-09-30',10,100,10.0/101,10,10.0/101)""")
+        writer.compute_derived_fundamentals()
+        writer.compute_derived_fundamentals()
+        assert writer.conn.execute("SELECT roa,roa_ttm,roa_derived FROM fundamentals").fetchone() == (5.0, 5.0, False)
+
+
+def test_unknown_legacy_roa_blocks_export_without_changing_data(tmp_path):
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa,roe_ttm,roa_ttm)
+            VALUES ('600000.SS','2026-09-30',10,100,10.0/101,10,10.0/101)""")
+        before = writer.conn.execute("SELECT * FROM fundamentals").fetchall()
+        with pytest.raises(ValueError, match="重新导入季度财务"):
+            writer.export_to_parquet(str(tmp_path / "export"))
+        assert writer.conn.execute("SELECT * FROM fundamentals").fetchall() == before
+        assert not (tmp_path / "export").exists()
+
+
+def test_source_roa_matching_old_formula_is_preserved_and_derived_values_refresh():
+    with DuckDBWriter(":memory:") as writer:
+        writer.write_fundamentals("600000.SS", pd.DataFrame({"date":["2026-09-30"], "roe":[10.0],
+            "debt_equity_ratio":[100.0], "roa":[10.0/101], "roa_ttm":[7.0]}))
+        writer.write_fundamentals("600001.SS", pd.DataFrame({"date":["2026-09-30"], "roe":[10.0],
+            "debt_equity_ratio":[100.0]}))
+        writer.compute_derived_fundamentals()
+        writer.write_fundamentals("600001.SS", pd.DataFrame({"date":["2026-09-30"], "roe":[20.0]}))
+        writer.compute_derived_fundamentals()
+        rows = writer.conn.execute("SELECT symbol,roa,roa_ttm FROM fundamentals ORDER BY symbol").fetchall()
+        assert rows == [("600000.SS",10.0/101,7.0),("600001.SS",10.0,10.0)]
+
+
+def test_restoring_legacy_roa_refreshes_following_ttm_and_preserves_known_source_ttm(tmp_path, monkeypatch):
+    directory = tmp_path / "mootdx_financial"
+    directory.mkdir()
+    (directory / "gpcw20260630.zip").touch()
+    from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
+    monkeypatch.setattr(MootdxAffairFetcher, "parse_local", lambda *a: pd.DataFrame({"raw":[1]}))
+    monkeypatch.setattr(MootdxAffairFetcher, "_convert_to_ptrade_format", lambda *a, **k:
+        pd.DataFrame({"code":["600000"], "end_date":["2026-06-30"], "roa":[5.0]}))
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa,roe_ttm,roa_ttm)
+            VALUES ('600000.SS','2026-06-30',10,100,10.0/101,10,10.0/101),
+                   ('600000.SS','2026-09-30',20,100,10,15,(10+10.0/101)/2)""")
+        writer.write_fundamentals("600000.SS", pd.DataFrame({"date":["2026-12-31"], "roa":[12.0], "roa_ttm":[9.0]}))
+        writer.compute_derived_fundamentals()
+        assert writer.conn.execute("SELECT roa_ttm FROM fundamentals ORDER BY date").fetchall() == [(5.0,),(7.5,),(9.0,)]
+
+
+
+def test_reimported_source_roa_rebuilds_untracked_legacy_ttm():
+    with DuckDBWriter(":memory:") as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa,roe_ttm,roa_ttm)
+            VALUES ('600000.SS','2026-09-30',10,100,10.0/101,10,10.0/101)""")
+        writer.write_fundamentals("600000.SS", pd.DataFrame({"date":["2026-09-30"],"roa":[5.0]}))
+        writer.compute_derived_fundamentals()
+        assert writer.conn.execute("SELECT roa,roa_ttm FROM fundamentals").fetchone() == (5.0,5.0)
+
+
+def test_derived_roa_is_cleared_when_inputs_become_invalid():
+    with DuckDBWriter(":memory:") as writer:
+        writer.write_fundamentals("600000.SS", pd.DataFrame({"date":["2026-09-30"],"roe":[10.0],"debt_equity_ratio":[100.0]}))
+        writer.compute_derived_fundamentals()
+        writer.write_fundamentals("600000.SS", pd.DataFrame({"date":["2026-09-30"],"debt_equity_ratio":[-100.0]}))
+        writer.compute_derived_fundamentals()
+        assert writer.conn.execute("SELECT roa,roa_ttm FROM fundamentals").fetchone() == (None,None)
+
+
+
+@pytest.mark.parametrize("damage", ["missing_code", "wrong_date", "duplicate", "missing_roa", "nonfinite"])
+def test_unverified_source_roa_does_not_mutate_legacy_rows(tmp_path, monkeypatch, damage):
+    directory = tmp_path / "mootdx_financial"
+    directory.mkdir()
+    (directory / "gpcw20260930.zip").touch()
+    report = pd.DataFrame({"code":["600000"],"end_date":["2026-09-30"],"roa":[5.0]})
+    if damage == "missing_code": report["code"] = "600001"
+    elif damage == "wrong_date": report["end_date"] = "2026-06-30"
+    elif damage == "duplicate": report = pd.concat([report,report],ignore_index=True)
+    elif damage == "missing_roa": report = report.drop(columns="roa")
+    else: report["roa"] = float("inf")
+    from simtradedata.fetchers.mootdx_affair_fetcher import MootdxAffairFetcher
+    monkeypatch.setattr(MootdxAffairFetcher, "parse_local", lambda *a: pd.DataFrame({"raw":[1]}))
+    monkeypatch.setattr(MootdxAffairFetcher, "_convert_to_ptrade_format", lambda *a, **k: report)
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa)
+            VALUES ('600000.SS','2026-09-30',10,100,10.0/101)""")
+        before = writer.conn.execute("SELECT * FROM fundamentals").fetchall()
+        with pytest.raises(ValueError, match="重新导入季度财务"):
+            writer.compute_derived_fundamentals()
+        assert writer.conn.execute("SELECT * FROM fundamentals").fetchall() == before
+
+
+def test_unresolved_legacy_roa_preserves_previous_delta_package(tmp_path):
+    output = tmp_path / "export"
+    output.mkdir()
+    sentinel = output / "previous.txt"
+    sentinel.write_text("previous package")
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("""INSERT INTO fundamentals(symbol,date,roe,debt_equity_ratio,roa)
+            VALUES ('600000.SS','2026-09-30',10,100,10.0/101)""")
+        with pytest.raises(ValueError, match="重新导入季度财务"):
+            writer.export_delta(str(output), "2026-09-30", "2026-11-23")
+    assert sentinel.read_text() == "previous package"

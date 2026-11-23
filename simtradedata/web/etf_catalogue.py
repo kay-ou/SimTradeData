@@ -111,19 +111,20 @@ class EtfCatalogue:
         self.running = False
         self.checked_at = None
         self.loaded = 0.0
+        self.retry_after = 0.0
 
     def get(self, refresh=False):
         with self.lock:
             self.not_trading = {symbol: info for symbol, info in self.not_trading.items()
                                 if not (info.get('listed_date') or info.get('issuance_date')) or (info.get('listed_date') or info['issuance_date']) > date.today().isoformat()}
-            if not self.running and (refresh or (not self.loaded and not self.error) or (self.loaded and time.monotonic() - self.loaded > 3600)):
+            if not self.running and (refresh or (not self.loaded and not self.error) or (self.loaded and time.monotonic() - self.loaded > 3600 and time.monotonic() >= self.retry_after)):
                 if refresh or self.loaded:
                     self.not_trading.clear()  # Recheck old evidence, preserving facts learned before the first load.
                 self.running = True
                 threading.Thread(target=self._load, daemon=True).start()
             running = self.running
             result = {'running': running, 'checked_at': self.checked_at, 'warnings': list(self.warnings), 'error': self.error}
-            rows = [] if running else [{**row, **({'listing_info': self.not_trading[row['symbol']]}
+            rows = [{**row, **({'listing_info': self.not_trading[row['symbol']]}
                     if row['symbol'] in self.not_trading else {})} for row in self.rows]
         result['etfs'] = local_ranges(self.data_dir, rows)
         result['total'] = len(rows)
@@ -142,10 +143,12 @@ class EtfCatalogue:
             with self.lock:
                 self.rows, self.warnings, self.error = rows, warnings, None
                 self.loaded = time.monotonic()
+                self.retry_after = 0.0
                 self.checked_at = datetime.now(timezone.utc).isoformat()
         except Exception as error:
             with self.lock:
                 self.error = str(error)
+                self.retry_after = time.monotonic() + 60
         finally:
             with self.lock:
                 self.running = False
@@ -159,13 +162,13 @@ def daily_etf_gaps(conn, symbols, start, end, include_dates=False):
     from simtradedata.web.coverage import trading_dates
     days = trading_dates(conn, start, end)
     metadata_join, metadata_filter = '', ''
-    lower_bound = 'f.first_date'
+    lower_bound = 'NULL::DATE'
     if 'stock_metadata' in tables:
         columns = {row[0] for row in conn.execute('DESCRIBE stock_metadata').fetchall()}
         if {'listed_date', 'de_listed_date'} & columns:
             metadata_join = "LEFT JOIN stock_metadata m ON m.symbol=w.symbol"
         if 'listed_date' in columns:
-            lower_bound = 'coalesce(TRY_CAST(m.listed_date AS DATE),f.first_date)'
+            lower_bound = 'TRY_CAST(m.listed_date AS DATE)'
             metadata_filter += "AND (TRY_CAST(m.listed_date AS DATE) IS NULL OR t.date>=TRY_CAST(m.listed_date AS DATE)) "
         if 'de_listed_date' in columns:
             metadata_filter += "AND (TRY_CAST(m.de_listed_date AS DATE) IS NULL OR t.date<TRY_CAST(m.de_listed_date AS DATE))"
@@ -175,9 +178,7 @@ def daily_etf_gaps(conn, symbols, start, end, include_dates=False):
         AND json_contains(TRY_CAST(h.symbols AS JSON),to_json(e.symbol)))""" if 'stock_status' in tables else ''
     selection = "list(e.date ORDER BY e.date)" if include_dates else "MIN(e.date),MAX(e.date)"
     rows = conn.execute(f"""WITH wanted AS (SELECT unnest(?::VARCHAR[]) AS symbol),
-        firsts AS (SELECT s.symbol,MIN(s.date) AS first_date FROM stocks s
-                   JOIN wanted w ON s.symbol=w.symbol GROUP BY s.symbol),
-        expected AS (SELECT w.symbol,t.date FROM wanted w LEFT JOIN firsts f USING(symbol)
+        expected AS (SELECT w.symbol,t.date FROM wanted w
                      {metadata_join}
                      JOIN (SELECT unnest(?::DATE[]) AS date) t ON t.date BETWEEN ? AND ?
                      AND ({lower_bound} IS NULL OR t.date>={lower_bound})

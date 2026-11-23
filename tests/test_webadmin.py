@@ -125,7 +125,8 @@ def test_only_one_task_and_cancellation_targets_owned_process(tmp_path, monkeypa
     manager.process = Mock(pid=1234)
     manager.process.poll.return_value = None
     killed = []
-    monkeypatch.setattr(jobs.os, "killpg", lambda *args: killed.append(args))
+    if jobs.os.name != "nt":
+        monkeypatch.setattr(jobs.os, "killpg", lambda *args: killed.append(args))
     with pytest.raises(RuntimeError):
         manager.preview(request())
     with pytest.raises(ValueError):
@@ -687,3 +688,42 @@ def test_etf_plan_cannot_claim_complete_when_calendar_is_incomplete(tmp_path):
         'etfs':[{'symbol':'159919.SZ'}]}
     result=manager._include_etfs(request(mode='auto'),{'work_pending':False,'status':'up_to_date'})
     assert result['work_pending'] and result['needs_calendar'] and result['status']=='ready'
+
+
+@pytest.mark.parametrize("mode", ["incremental", "refresh"])
+def test_pcf_partial_calendar_requires_sync(tmp_path, mode):
+    from tests.ui_server import seed
+    seed(tmp_path)
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("DELETE FROM exchange_calendar WHERE date='2026-11-19'")
+    with pytest.raises(ValueError, match="同步交易日历"):
+        build_plan(tmp_path, request(dataset="pcf", mode=mode, symbols=["159919.SZ"]))
+
+
+@pytest.mark.parametrize("repaired", [True, False])
+def test_invalid_etf_bar_missing_from_zip_is_repaired_or_reported(tmp_path, monkeypatch, repaired):
+    import struct
+    import zipfile
+    from tests.ui_server import seed
+    from simtradedata.web.operations import update_daily
+    seed(tmp_path)
+    with zipfile.ZipFile(tmp_path / "downloads" / "hsjday.zip", "a") as archive:
+        archive.writestr("vipdoc/sz/lday/sz159919.day", b"".join(
+            struct.pack("<IIIIIfII", day,1000,1100,900,1050,1050.,1000,0)
+            for day in [20261118,20261120]))
+    with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+        writer.conn.execute("INSERT INTO stocks(symbol,date,open,high,low,close,volume,money) VALUES ('159919.SZ','2026-11-19',0,1.1,.9,0,1000,1050)")
+    fetcher = Mock()
+    fetcher.__enter__ = Mock(return_value=fetcher)
+    fetcher.__exit__ = Mock(return_value=False)
+    fetcher.fetch_daily_bars.return_value = pd.DataFrame({"date":["2026-11-19"],"open":[1.],"high":[1.1],"low":[.9],"close":[1.05],"volume":[1000],"amount":[1050.]}) if repaired else pd.DataFrame()
+    monkeypatch.setattr('simtradedata.fetchers.mootdx_fetcher.MootdxFetcher', lambda: fetcher)
+    monkeypatch.setattr('simtradedata.web.etf_listing.fetch_etf_listing_info', lambda symbol: None)
+    result = update_daily(tmp_path, build_plan(tmp_path, request(mode="auto", symbols=["159919.SZ"])))
+    fetcher.fetch_daily_bars.assert_called_once_with("159919.SZ", "2026-11-19", "2026-11-19")
+    if repaired:
+        assert not result["failed_units"]
+        with DuckDBWriter(str(tmp_path / "cn.duckdb")) as writer:
+            assert writer.conn.execute("SELECT close FROM stocks WHERE symbol='159919.SZ' AND date='2026-11-19'").fetchone()[0] == 1.05
+    else:
+        assert result["failed_units"][0]["missing_dates"] == ["2026-11-19"]

@@ -13,7 +13,7 @@ from scripts import check_data_sources
 
 def test_daily_monitor_includes_restored_mootdx():
     assert check_data_sources.DEFAULT_SOURCES == [
-        "mootdx", "eastmoney", "baostock", "yfinance",
+        "mootdx", "eastmoney", "baostock", "yfinance", "tdx_package",
     ]
 
 
